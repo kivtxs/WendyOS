@@ -18,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // Compile-time assertion that MeshDialer satisfies this package's PeerDialer
@@ -26,11 +27,11 @@ import (
 var _ PeerDialer = (*MeshDialer)(nil)
 
 const (
-	// lanBudget bounds mDNS discovery + LAN connect before falling back to
-	// the routed mesh or the cloud relay; the outcome cache keeps repeat dials
-	// from re-paying it.
-	lanBudget   = 1 * time.Second
-	lanCacheTTL = 60 * time.Second
+	// LAN discovery gets a separate cold-resolve budget from connection setup.
+	// The outcome cache keeps repeat administrative dials from re-paying it.
+	lanBudget          = 1 * time.Second
+	lanDiscoveryBudget = 3 * time.Second
+	lanCacheTTL        = 60 * time.Second
 
 	// meshDialTarget is the fixed gRPC target used for every LAN peer dial. The
 	// peer's real address is supplied out-of-band by meshDialContextDialer, so a
@@ -90,6 +91,7 @@ type MeshDialer struct {
 	appLANDial   func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
 	cloudAppDial func(ctx context.Context, device meshid.Device, port uint16) (net.Conn, error)
 	appTLSLookup func(context.Context, meshid.Device) (netip.AddrPort, bool)
+	lanEvents    func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent
 	serviceDial  func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
 	localDial    func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
 	selfDial     func(ctx context.Context, port uint16) (net.Conn, error)
@@ -214,6 +216,7 @@ func NewMeshDialer(logger *zap.Logger, certPEM, keyPEM, chainPEM string, metrics
 	d.appLANDial = d.meshDialAppLAN
 	d.cloudAppDial = d.meshDialAppCloud
 	d.appTLSLookup = d.discoverAppTLSOnLAN
+	d.lanEvents = discovery.StreamLAN
 	return d
 }
 
@@ -395,7 +398,7 @@ func (d *MeshDialer) lanAddr(ctx context.Context, device meshid.Device) (string,
 	}
 	d.mu.Unlock()
 
-	lctx, cancel := context.WithTimeout(ctx, lanBudget)
+	lctx, cancel := context.WithTimeout(ctx, lanDiscoveryBudget)
 	hostport, ok := d.lanLookup(lctx, device)
 	cancel()
 	if !ok {
@@ -412,44 +415,48 @@ func (d *MeshDialer) lanAddr(ctx context.Context, device meshid.Device) (string,
 // SPIFFE identity; a sighting only counts when it parses to exactly the device
 // being dialed.
 func (d *MeshDialer) discoverOnLAN(ctx context.Context, device meshid.Device) (string, bool) {
-	// Keep confirmed sightings collected before the bounded scan ends. A
-	// context deadline can coincide with the collector timer; Discover would
-	// otherwise discard all results with that deadline error.
-	devices, _ := discovery.CollectLAN(ctx, discovery.StreamOptions{}, lanBudget)
-	for _, dev := range devices {
-		if dev.PrincipalURI != device.Principal() || !dev.IsMTLS || dev.IPAddress == "" {
-			continue
-		}
-		// Some hosts' avahi/mDNS advertisements include a loopback address
-		// among their resolved AAAA/A records (e.g. a stray "::1 <hostname>"
-		// line in /etc/hosts gets published verbatim) — dialing that from a
-		// different physical device always reaches back into the DIALING
-		// device's own loopback instead of the peer, connect()ing (or
-		// refusing/timing out) against a totally unrelated local service.
-		// Skip it so the caller falls through to the routed mesh or the cloud
-		// relay leg instead of retrying a hopeless local dial forever (found
-		// via RemoteCam demo debugging: repeated "dial tcp [::1]:50052:
-		// connect: connection refused" against the peer's own mTLS port
-		// number).
-		//
-		// dev.IPAddress is not always a numeric literal — some mDNS/avahi
-		// paths can hand back a bare hostname (e.g. "localhost"), which
-		// net.ParseIP silently returns nil for rather than resolving, letting
-		// a loopback hostname slip past a numeric-only check.
-		isLoopback := strings.EqualFold(dev.IPAddress, "localhost")
-		if !isLoopback {
-			if ip := net.ParseIP(dev.IPAddress); ip != nil && ip.IsLoopback() {
-				isLoopback = true
-			}
-		}
-		if isLoopback {
-			d.logger.Warn("wendy net: ignoring loopback address in LAN discovery result",
-				zap.String("peer", device.Principal()), zap.String("ip", dev.IPAddress))
-			continue
-		}
-		return net.JoinHostPort(dev.IPAddress, strconv.Itoa(dev.Port)), true
+	dev, found := d.findLANDevice(ctx, device, false)
+	if !found {
+		return "", false
 	}
-	return "", false
+	return net.JoinHostPort(dev.IPAddress, strconv.Itoa(dev.Port)), true
+}
+
+// findLANDevice waits for the requested principal, rather than a batch browse
+// settling after an unrelated (often this host's own) advertisement. Discovery
+// supplies an address hint only; every app path must still prove the exact TLS
+// principal and admit the live port.
+func (d *MeshDialer) findLANDevice(ctx context.Context, peer meshid.Device, requireApplicationTLS bool) (models.LANDevice, bool) {
+	ctx, cancel := context.WithTimeout(ctx, lanDiscoveryBudget)
+	stream := d.lanEvents(ctx, discovery.StreamOptions{OnBackendError: func(err error) {
+		d.logger.Debug("LAN peer discovery backend unavailable", zap.Error(err))
+	}})
+	defer func() {
+		cancel()
+		for range stream {
+		}
+	}()
+	for event := range stream {
+		if event.Kind != discovery.LANFound && event.Kind != discovery.LANUpdated {
+			continue
+		}
+		dev := event.Device
+		if dev.PrincipalURI != peer.Principal() || !dev.IsMTLS || dev.IPAddress == "" || (requireApplicationTLS && dev.AppTLSPort == 0) {
+			continue
+		}
+		if strings.EqualFold(dev.IPAddress, "localhost") {
+			continue
+		}
+		ip, err := netip.ParseAddr(dev.IPAddress)
+		if (err != nil && requireApplicationTLS) || (err == nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+			continue
+		}
+		if !requireApplicationTLS && (dev.Port <= 0 || dev.Port > 65535) {
+			continue
+		}
+		return dev, true
+	}
+	return models.LANDevice{}, false
 }
 
 // dialBoundContext returns a stream context that outlives the caller's ctx —

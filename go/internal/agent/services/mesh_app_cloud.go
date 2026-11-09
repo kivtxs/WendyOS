@@ -12,7 +12,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/meshsession"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
-	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
@@ -93,18 +92,13 @@ func (d *MeshDialer) DialApplicationUDPWithoutMesh(ctx context.Context, peer mes
 }
 
 func (d *MeshDialer) discoverAppTLSOnLAN(ctx context.Context, peer meshid.Device) (netip.AddrPort, bool) {
-	ctx, cancel := context.WithTimeout(ctx, lanBudget)
-	defer cancel()
-	devices, _ := discovery.CollectLAN(ctx, discovery.StreamOptions{}, lanBudget)
-	for _, device := range devices {
-		if device.PrincipalURI != peer.Principal() || !device.IsMTLS || device.AppTLSPort == 0 {
-			continue
-		}
-		address, err := netip.ParseAddrPort(net.JoinHostPort(device.IPAddress, strconv.Itoa(int(device.AppTLSPort))))
-		if err != nil || address.Addr().IsLoopback() || address.Addr().IsUnspecified() {
-			continue
-		}
-		return address, true
+	device, found := d.findLANDevice(ctx, peer, true)
+	if !found {
+		return netip.AddrPort{}, false
 	}
-	return netip.AddrPort{}, false
+	address, err := netip.ParseAddrPort(net.JoinHostPort(device.IPAddress, strconv.Itoa(int(device.AppTLSPort))))
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+	return address, true
 }
