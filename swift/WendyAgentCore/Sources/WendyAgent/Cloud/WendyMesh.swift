@@ -44,21 +44,12 @@ public struct WendyMeshDevice: Codable, Equatable, Sendable {
     public let name: String
     public let organizationID: String
     public let online: Bool
-    /// Authenticated inventory/certificate binding; an old asset UUID may differ.
-    public let principal: String?
 
-    public init(
-        assetID: String,
-        name: String,
-        organizationID: String,
-        online: Bool,
-        principal: String? = nil
-    ) {
+    public init(assetID: String, name: String, organizationID: String, online: Bool) {
         self.assetID = assetID
         self.name = name
         self.organizationID = organizationID
         self.online = online
-        self.principal = principal
     }
 
     enum CodingKeys: String, CodingKey {
@@ -66,7 +57,6 @@ public struct WendyMeshDevice: Codable, Equatable, Sendable {
         case name
         case organizationID = "org_id"
         case online
-        case principal
     }
 }
 
@@ -176,14 +166,11 @@ public enum WendyMeshAddressPlan {
 
 /// Minimal DNS codec for `device-<address-index>.mesh.wendy.internal`.
 public enum WendyMeshDNS {
-    private static let suffixes = [".mesh.wendy.internal", ".cloud.wendy.dev", ".wendy.internal"]
+    private static let suffixes = [".mesh.wendy.internal", ".cloud.wendy.dev"]
 
     public static func addressIndex(forName name: String) -> Int32? {
-        guard name.utf8.allSatisfy({ $0 < 128 }) else { return nil }
-        let normalized = (name.hasSuffix(".") ? String(name.dropLast()) : name).lowercased()
-        guard let suffix = suffixes.first(where: { normalized.hasSuffix($0) }),
-            suffix != ".wendy.internal"
-        else { return nil }
+        let normalized = name.hasSuffix(".") ? String(name.dropLast()) : name
+        guard let suffix = suffixes.first(where: { normalized.hasSuffix($0) }) else { return nil }
         let label = normalized.dropLast(suffix.count)
         guard label.hasPrefix("device-") else { return nil }
         let digits = label.dropFirst("device-".count)
@@ -191,79 +178,13 @@ public enum WendyMeshDNS {
         return Int32(digits)
     }
 
-    /// Resolves identity names against the authenticated directory. Friendly
-    /// aliases require one organization and one exact, case-insensitive label;
-    /// repeated hyphens remain significant.
-    public static func addressIndex(forName name: String, directory: WendyMeshDirectory) -> Int32? {
-        guard name.utf8.allSatisfy({ $0 < 128 }) else { return nil }
-        let normalized = (name.hasSuffix(".") ? String(name.dropLast()) : name).lowercased()
-        guard let suffix = suffixes.first(where: { normalized.hasSuffix($0) }) else { return nil }
-        let label = String(normalized.dropLast(suffix.count))
-        if label.hasPrefix("device-") {
-            let value = String(label.dropFirst("device-".count))
-            if let uuid = UUID(uuidString: value), uuid.uuidString.lowercased() == value {
-                if suffix == ".cloud.wendy.dev" {
-                    return directory.addressIndex(forAssetID: value)
-                }
-                let matches = directory.devices.filter { device in
-                    guard let tenant = UUID(uuidString: device.organizationID),
-                        tenant.uuidString.lowercased() == device.organizationID
-                    else { return false }
-                    return device.principal
-                        == "spiffe://wendy.sh/tenant/\(device.organizationID)/device/\(value)"
-                }
-                guard matches.count == 1, let device = matches.first else { return nil }
-                return directory.addressIndex(forAssetID: device.assetID)
-            }
-            if suffix != ".wendy.internal", let index = addressIndex(forName: name),
-                directory.device(forAddressIndex: index) != nil
-            {
-                return index
-            }
-        }
-        guard suffix == ".wendy.internal", validFriendlyLabel(label),
-            Set(directory.devices.map(\.organizationID)).count == 1,
-            directory.devices.first?.organizationID.isEmpty == false
-        else { return nil }
-        let matches = directory.devices.filter {
-            validFriendlyLabel($0.name) && $0.name.lowercased() == label
-        }
-        guard matches.count == 1, let device = matches.first else { return nil }
-        return directory.addressIndex(forAssetID: device.assetID)
-    }
-
-    private static func validFriendlyLabel(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard let first = bytes.first, bytes.count <= 63,
-            first >= 97 && first <= 122 || first >= 65 && first <= 90, bytes.last != 45
-        else { return false }
-        return bytes.allSatisfy {
-            $0 >= 97 && $0 <= 122 || $0 >= 65 && $0 <= 90 || $0 >= 48 && $0 <= 57 || $0 == 45
-        }
-    }
-
-    public static func answer(_ data: Data, directory: WendyMeshDirectory) -> Data? {
-        guard let query = parseQuery(data) else { return nil }
-        let normalized = query.name.lowercased()
-        guard
-            normalized == "wendy.internal" || suffixes.contains(where: { normalized.hasSuffix($0) })
-        else { return nil }
-        guard let index = addressIndex(forName: query.name, directory: directory),
-            let address = WendyMeshAddressPlan.address(for: index)
-        else { return response(to: query, answer: nil, responseCode: 3) }
-        return response(to: query, answer: query.type == 1 ? address : nil, responseCode: 0)
-    }
-
     public static func answer(
         _ data: Data,
         resolve: (Int32) -> (UInt8, UInt8, UInt8, UInt8)?
     ) -> Data? {
         guard let query = parseQuery(data) else { return nil }
-        let normalized = (query.name.hasSuffix(".") ? String(query.name.dropLast()) : query.name)
-            .lowercased()
-        guard
-            normalized == "wendy.internal" || suffixes.contains(where: { normalized.hasSuffix($0) })
-        else { return nil }
+        let normalized = query.name.hasSuffix(".") ? String(query.name.dropLast()) : query.name
+        guard suffixes.contains(where: { normalized.hasSuffix($0) }) else { return nil }
         guard let addressIndex = addressIndex(forName: query.name),
             let address = resolve(addressIndex)
         else {

@@ -226,7 +226,15 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
             for (payload, endpoint) in datagrams {
                 guard case .hostPort(let host, let port) = endpoint else { continue }
                 if port.rawValue == 53 {
-                    if let resp = WendyMeshDNS.answer(payload, directory: config.directory) {
+                    if let resp = WendyMeshDNS.answer(
+                        payload,
+                        resolve: { addressIndex in
+                            // Only answer for devices actually in this org's directory.
+                            guard config.directory.device(forAddressIndex: addressIndex) != nil
+                            else { return nil }
+                            return WendyMeshAddressPlan.address(for: addressIndex)
+                        }
+                    ) {
                         Task { await writeQueue.enqueue(resp, endpoint: endpoint) }
                     }
                     continue  // non-mesh name: drop (resolver only matches the mesh DNS suffixes)
@@ -310,7 +318,15 @@ final class WendyNetProxyProvider: NETransparentProxyProvider, NEAppProxyUDPFlow
             pending.append(data)
             let queries = WendyMeshDNS.extractTCPMessages(from: &pending)
             let responses = queries.compactMap { query in
-                WendyMeshDNS.answer(query, directory: config.directory)
+                WendyMeshDNS.answer(
+                    query,
+                    resolve: { addressIndex in
+                        guard config.directory.device(forAddressIndex: addressIndex) != nil else {
+                            return nil
+                        }
+                        return WendyMeshAddressPlan.address(for: addressIndex)
+                    }
+                )
             }
 
             guard !responses.isEmpty else {
