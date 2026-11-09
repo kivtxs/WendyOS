@@ -504,6 +504,30 @@ Application services derive from the same verified manifest directory.
 Internet-sharing overlays and physical LAN service projection retain their own
 policy and runtime layers.
 
+## Application names and direct app paths
+
+The app DNS resolver accepts `device-<uuid>.wendy.internal` and one-label
+`<device-name>.wendy.internal` within the enrolled tenant. UUID names pin a local
+VIP; exact friendly labels merge currently known signed device manifests, LAN
+mDNS sightings and Cloud roster entries. Conflicting principals fail closed.
+Valid enrolled names retain repeated hyphens; compatibility org-qualified aliases
+keep their legacy normalization. Signed device manifests publish the installed
+friendly label and republish live renames through the durable revision gate.
+
+Router participation and app ingress are separate. Updated agents advertise the
+application-only TLS listener `app-tls=43023` through `_wendyos._udp` after it is
+ready. Both TCP app streams and framed UDP messages use their existing inner
+mTLS application protocol, exact destination principal and live published-port
+admission. No management service is registered on this listener.
+
+The device-originated Cloud relay uses the symbolic `wendy-app` service. Cloud
+restricts that lane to live same-tenant device identities, and the destination
+agent dispatches the signed descriptor only to its in-memory application TLS
+listener. It never falls back to an arbitrary loopback TCP socket. An operator's
+management relay permissions do not come from this device-only service. This
+path requires the coordinated Cloud backend and agent updates; older Cloud
+backends report the missing capability rather than downgrade admission.
+
 ## Cloud relay presence
 
 Cloud relay presence checks its TCP source address every ten seconds. If that
