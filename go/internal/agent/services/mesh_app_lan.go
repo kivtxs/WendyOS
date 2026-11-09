@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"net"
+	"net/netip"
 	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
@@ -19,31 +20,27 @@ import (
 // then MeshDial authorizes the requested port against the live app registry.
 func (d *MeshDialer) meshDialAppLAN(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error) {
 	identity := d.identity()
-	// New agents advertise their dedicated app endpoint, which stays available
-	// with mesh carrier participation disabled. Legacy peers retain MeshDial.
-	if d.appTLSLookup != nil {
-		if address, found := d.appTLSLookup(ctx, device); found {
-			credentials, err := localmesh.NewCredentials(identity.certPEM, identity.chainPEM, identity.keyPEM)
-			if err != nil {
-				return nil, err
-			}
-			return meshsession.DialTLSWithDialer(ctx, credentials, device, address, port, d.applicationLANDial(identity))
-		}
-	}
 	config, err := mtls.NewClientTLSConfigExpectingDevice(identity.certPEM, identity.chainPEM, identity.keyPEM, d.logger, device)
 	if err != nil {
 		return nil, err
 	}
+	attempt, stop := context.WithCancel(ctx)
+	defer stop()
+	causes := &lanConnectionErrors{stop: stop}
 	cc, err := grpc.NewClient(meshDialTarget,
-		grpc.WithTransportCredentials(credentials.NewTLS(config)),
-		grpc.WithContextDialer(meshDialContextDialer(hostport)))
+		grpc.WithTransportCredentials(lanRecordingCredentials{credentials.NewTLS(config), causes}),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			conn, err := d.dialApplicationSocket(ctx, "tcp", hostport)
+			causes.recordDial(err)
+			return conn, err
+		}))
 	if err != nil {
 		return nil, err
 	}
-	conn, err := meshappstream.Dial(ctx, cc, port)
+	conn, err := meshappstream.Dial(attempt, cc, port)
 	if err != nil {
 		_ = cc.Close()
-		return nil, err
+		return nil, causes.cause(err)
 	}
 	return d.ownApplicationConnection(conn, cc.Close, identity)
 }
@@ -101,10 +98,26 @@ func (c *ownedAppConnection) CloseWrite() error {
 
 func (d *MeshDialer) applicationLANDial(identity meshIdentity) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		conn, err := d.dialApplicationSocket(ctx, network, address)
 		if err != nil {
 			return nil, err
 		}
 		return d.ownApplicationConnection(conn, func() error { return nil }, identity)
 	}
+}
+
+func (d *MeshDialer) meshDialApplicationTLS(ctx context.Context, address netip.AddrPort, peer meshid.Device, port uint16) (net.Conn, error) {
+	identity := d.identity()
+	credentials, err := localmesh.NewCredentials(identity.certPEM, identity.chainPEM, identity.keyPEM)
+	if err != nil {
+		return nil, err
+	}
+	return meshsession.DialTLSWithDialer(ctx, credentials, peer, address, port, d.applicationLANDial(identity))
+}
+
+func (d *MeshDialer) dialApplicationSocket(ctx context.Context, network, address string) (net.Conn, error) {
+	if d.appSocketDial != nil {
+		return d.appSocketDial(ctx, network, address)
+	}
+	return (&net.Dialer{}).DialContext(ctx, network, address)
 }

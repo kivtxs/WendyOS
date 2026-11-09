@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"strconv"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
@@ -79,9 +78,15 @@ func (d *MeshDialer) DialApplicationUDPWithoutMesh(ctx context.Context, peer mes
 	if !peer.IsValid() || peer.Tenant() != credentials.Device.Tenant() {
 		return nil, errors.New("application UDP target is outside the enrolled tenant")
 	}
-	if address, found := d.appTLSLookup(ctx, peer); found {
-		dial := d.applicationLANDial(identity)
-		return meshsession.DialUDPTLSWithDialer(ctx, credentials, peer, address, port, dial, options)
+	flow, found, err := dialApplicationLAN(ctx, d, peer, true, func(attempt context.Context, candidate applicationLANAddress) (mesh.UDPFlow, error) {
+		flow, err := meshsession.DialUDPTLSWithDialer(attempt, credentials, peer, candidate.address, port, d.applicationLANDial(identity), options)
+		if err != nil {
+			return nil, err
+		}
+		return flow, nil
+	})
+	if found || err != nil {
+		return flow, err
 	}
 	credentials, dial, err := d.cloudAppTransport(peer)
 	if err != nil {
@@ -89,16 +94,4 @@ func (d *MeshDialer) DialApplicationUDPWithoutMesh(ctx context.Context, peer mes
 	}
 	address := netip.AddrPortFrom(peer.MeshAddress(), meshsession.TLSPort)
 	return meshsession.DialUDPTLSWithDialer(ctx, credentials, peer, address, port, dial, options)
-}
-
-func (d *MeshDialer) discoverAppTLSOnLAN(ctx context.Context, peer meshid.Device) (netip.AddrPort, bool) {
-	device, found := d.findLANDevice(ctx, peer, true)
-	if !found {
-		return netip.AddrPort{}, false
-	}
-	address, err := netip.ParseAddrPort(net.JoinHostPort(device.IPAddress, strconv.Itoa(int(device.AppTLSPort))))
-	if err != nil {
-		return netip.AddrPort{}, false
-	}
-	return address, true
 }

@@ -3,8 +3,11 @@ package services
 import (
 	"context"
 	"errors"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"io"
 	"net"
+	"strconv"
 	"syscall"
 	"testing"
 
@@ -116,6 +119,7 @@ func TestMeshAppDialerUsesAuthorizedLANWhenMeshHasNoRoute(t *testing.T) {
 	d, probes := testDialer()
 	peer := appTestMeshDevice(t)
 	probes.lanAddr = "192.0.2.10:50052"
+	appLANTestEvents(d, probes, appTestMeshDevice(t))
 	d.SetLocalMeshDialer(func(context.Context, meshid.Device, uint16) (net.Conn, error) {
 		return nil, meshsession.ErrNoRoute
 	})
@@ -136,7 +140,7 @@ func TestMeshAppDialerUsesAuthorizedLANWhenMeshHasNoRoute(t *testing.T) {
 		}
 		_ = conn.Close()
 	}
-	if calls != 2 || probes.lookups != 1 || probes.lanDials != 0 || probes.brokerDials != 0 {
+	if calls != 2 || probes.lookups != 2 || probes.lanDials != 0 || probes.brokerDials != 0 {
 		t.Fatalf("LAN application dials=%d probes=%+v", calls, probes)
 	}
 }
@@ -144,6 +148,7 @@ func TestMeshAppDialerUsesAuthorizedLANWhenMeshHasNoRoute(t *testing.T) {
 func TestMeshAppDialerLANDenialNeverUsesAdministrativeService(t *testing.T) {
 	d, probes := testDialer()
 	probes.lanAddr = "192.0.2.10:50052"
+	appLANTestEvents(d, probes, appTestMeshDevice(t))
 	d.appLANDial = func(context.Context, string, meshid.Device, uint16) (net.Conn, error) {
 		return nil, meshsession.ErrDenied
 	}
@@ -218,5 +223,19 @@ func TestAppTransportsRetireWhenEnrolledCloudChanges(t *testing.T) {
 	if flow, err := d.ownApplicationConnection(local, func() error { return nil }, identity); err == nil {
 		flow.Close()
 		t.Fatal("in-flight setup admitted a replaced Cloud endpoint")
+	}
+}
+
+func appLANTestEvents(d *MeshDialer, probes *dialerProbes, peer meshid.Device) {
+	d.lanEvents = func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent {
+		probes.lookups++
+		out := make(chan discovery.LANEvent, 1)
+		if probes.lanAddr != "" {
+			host, port, _ := net.SplitHostPort(probes.lanAddr)
+			number, _ := strconv.Atoi(port)
+			out <- discovery.LANEvent{Kind: discovery.LANFound, Device: models.LANDevice{IPAddress: host, Port: number, PrincipalURI: peer.Principal(), IsMTLS: true}}
+		}
+		close(out)
+		return out
 	}
 }

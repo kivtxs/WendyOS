@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"go.uber.org/zap"
 )
@@ -21,6 +22,12 @@ var dialerOtherTarget = DeliveryTarget{Device: mustTestDevice(testAssetUUIDB), A
 func testDialer() (*MeshDialer, *dialerProbes) {
 	p := &dialerProbes{}
 	d := NewMeshDialer(zap.NewNop(), "", "", "", nil)
+	d.lanEvents = func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent {
+		p.lookups++
+		out := make(chan discovery.LANEvent)
+		close(out)
+		return out
+	}
 	d.lanLookup = func(ctx context.Context, device meshid.Device) (string, bool) {
 		p.lookups++
 		return p.lanAddr, p.lanAddr != ""

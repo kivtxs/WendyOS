@@ -2,11 +2,13 @@ package services
 
 import (
 	"context"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"io"
 	"net"
-	"net/netip"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -78,7 +80,23 @@ func TestMeshAppLANUsesPinnedMTLSAndRunningAppAdmission(t *testing.T) {
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() { _ = server.Serve(listener) }()
 	dialer := NewMeshDialer(zap.NewNop(), clientCert, clientKey, root, nil)
-	dialer.appTLSLookup = func(context.Context, meshid.Device) (netip.AddrPort, bool) { return netip.AddrPort{}, false }
+	wrong, _ := meshid.ParseDevice(tenant, "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+	dialer.lanEvents = func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent {
+		out := make(chan discovery.LANEvent, 2)
+		for _, device := range []meshid.Device{peer, wrong} {
+			out <- discovery.LANEvent{Kind: discovery.LANFound, Device: models.LANDevice{PrincipalURI: device.Principal(), IPAddress: "2001:db8::1", Addresses: []string{"192.0.2.20", "192.0.2.21"}, Port: listener.Addr().(*net.TCPAddr).Port, IsMTLS: true}}
+		}
+		close(out)
+		return out
+	}
+	var socketAttempts atomic.Int32
+	dialer.appSocketDial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		socketAttempts.Add(1)
+		if strings.HasPrefix(address, "[2001:db8:") {
+			return nil, syscall.ENETUNREACH
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, listener.Addr().String())
+	}
 	dialer.lanLookup = func(context.Context, meshid.Device) (string, bool) { return listener.Addr().String(), true }
 	dialer.SetLocalMeshDialer(func(context.Context, meshid.Device, uint16) (net.Conn, error) { return nil, meshsession.ErrNoRoute })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -105,10 +123,12 @@ func TestMeshAppLANUsesPinnedMTLSAndRunningAppAdmission(t *testing.T) {
 	if _, _, err := NewMeshAppDialer(dialer).DialDevice(ctx, peer, 8081); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("unpublished port=%v", err)
 	}
-	wrong, _ := meshid.ParseDevice(tenant, "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 	_, _, err = NewMeshAppDialer(dialer).DialDevice(ctx, wrong, 8080)
 	if err == nil || !strings.Contains(err.Error(), "device") {
 		t.Fatalf("wrong advertised identity=%v", err)
+	}
+	if count := socketAttempts.Load(); count != 6 {
+		t.Fatalf("LAN address attempts=%d, want unreachable+reachable once for each success/port denial/identity denial", count)
 	}
 	if count := appConnections.Load(); count != 1 {
 		t.Fatalf("unauthorized application connections=%d", count)

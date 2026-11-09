@@ -45,8 +45,10 @@ func TestApplicationLANLookupWaitsPastUnrelatedAndIncompleteSightings(t *testing
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	address, found := d.discoverAppTLSOnLAN(ctx, peer)
-	if !found || address != netip.MustParseAddrPort("192.168.2.9:43023") {
+	address, found, err := dialApplicationLAN(ctx, d, peer, true, func(_ context.Context, candidate applicationLANAddress) (netip.AddrPort, error) {
+		return candidate.address, nil
+	})
+	if err != nil || !found || address != netip.MustParseAddrPort("192.168.2.9:43023") {
 		t.Fatalf("cold peer endpoint=%v found=%v", address, found)
 	}
 }
@@ -61,7 +63,9 @@ func TestApplicationLANLookupRemainsBoundedWithoutTheTarget(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if _, found := d.discoverAppTLSOnLAN(ctx, dialerTestTarget.Device); found {
+	if _, found, _ := dialApplicationLAN(ctx, d, dialerTestTarget.Device, true, func(_ context.Context, candidate applicationLANAddress) (netip.AddrPort, error) {
+		return candidate.address, nil
+	}); found {
 		t.Fatal("missing peer manufactured an endpoint")
 	}
 	select {

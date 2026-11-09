@@ -64,12 +64,16 @@ func (a *MeshAppDialer) DialDevice(ctx context.Context, device meshid.Device, po
 }
 
 func (a *MeshAppDialer) dialLAN(ctx context.Context, device meshid.Device, port uint16) (net.Conn, string, error) {
-	address, found := a.mesh.lanAddr(ctx, device)
-	if !found {
+	started := a.mesh.now()
+	conn, found, err := dialApplicationLAN(ctx, a.mesh, device, false, func(attempt context.Context, candidate applicationLANAddress) (net.Conn, error) {
+		if candidate.applicationTLS {
+			return a.mesh.meshDialApplicationTLS(attempt, candidate.address, device, port)
+		}
+		return a.mesh.appLANDial(attempt, candidate.String(), device, port)
+	})
+	if !found && err == nil {
 		return a.dialCloud(ctx, device, port)
 	}
-	started := a.mesh.now()
-	conn, err := a.mesh.appLANDial(ctx, address, device, port)
 	result := "ok"
 	if err != nil {
 		result = "error"

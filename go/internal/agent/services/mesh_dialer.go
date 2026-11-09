@@ -86,16 +86,16 @@ type MeshDialer struct {
 	metrics *MeshMetrics
 
 	// Seams (overridden in tests).
-	lanLookup    func(ctx context.Context, device meshid.Device) (hostport string, ok bool)
-	dialLAN      func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
-	appLANDial   func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
-	cloudAppDial func(ctx context.Context, device meshid.Device, port uint16) (net.Conn, error)
-	appTLSLookup func(context.Context, meshid.Device) (netip.AddrPort, bool)
-	lanEvents    func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent
-	serviceDial  func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
-	localDial    func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
-	selfDial     func(ctx context.Context, port uint16) (net.Conn, error)
-	now          func() time.Time
+	lanLookup     func(ctx context.Context, device meshid.Device) (hostport string, ok bool)
+	dialLAN       func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
+	appLANDial    func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
+	cloudAppDial  func(ctx context.Context, device meshid.Device, port uint16) (net.Conn, error)
+	appSocketDial func(context.Context, string, string) (net.Conn, error)
+	lanEvents     func(context.Context, discovery.StreamOptions) <-chan discovery.LANEvent
+	serviceDial   func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
+	localDial     func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
+	selfDial      func(ctx context.Context, port uint16) (net.Conn, error)
+	now           func() time.Time
 
 	mu       sync.Mutex
 	ident    meshIdentity
@@ -215,7 +215,6 @@ func NewMeshDialer(logger *zap.Logger, certPEM, keyPEM, chainPEM string, metrics
 	d.dialLAN = d.meshDialLAN
 	d.appLANDial = d.meshDialAppLAN
 	d.cloudAppDial = d.meshDialAppCloud
-	d.appTLSLookup = d.discoverAppTLSOnLAN
 	d.lanEvents = discovery.StreamLAN
 	return d
 }
