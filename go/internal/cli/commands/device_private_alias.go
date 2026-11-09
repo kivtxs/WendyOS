@@ -70,12 +70,15 @@ func parsePrivateDeviceAlias(value string) (privateDeviceAlias, bool, error) {
 }
 
 var privateAliasMeshRead = func(ctx context.Context) (sessionbroker.OperatorDirectory, error) { return meshDirectoryRead(ctx) }
+var privateAliasLANCollect = discovery.CollectLAN
 var privateAliasLANBrowse = func(ctx context.Context) ([]models.LANDevice, error) {
-	collection, err := discovery.Discover(ctx, discovery.DiscoveryOptions{Types: []models.InterfaceType{models.InterfaceLAN}, Timeout: time.Second})
-	if err != nil {
+	// CollectLAN returns confirmed sightings even when the surrounding discovery
+	// budget expires during stream shutdown. Discover drops those partial rows.
+	devices, err := privateAliasLANCollect(ctx, discovery.StreamOptions{}, time.Second)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return nil, err
 	}
-	return collection.LANDevices, nil
+	return devices, nil
 }
 var privateAliasCloudFetch = fetchCloudAssetsV2
 var privateAliasPrepareAuth = prepareDefaultCloudCertificate

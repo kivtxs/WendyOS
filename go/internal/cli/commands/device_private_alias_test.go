@@ -13,6 +13,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -74,6 +75,39 @@ func TestPrivateDeviceAliasParsing(t *testing.T) {
 			}
 			if tc.valid && (got.label != tc.label || got.uuid != tc.uuid) {
 				t.Fatalf("parse=%+v", got)
+			}
+		})
+	}
+}
+
+func TestPrivateDeviceAliasLANBrowseRetainsConfirmedRowsOnTimeout(t *testing.T) {
+	old := privateAliasLANCollect
+	t.Cleanup(func() { privateAliasLANCollect = old })
+	device := privateAliasTestLAN(privateAliasDevice, "jetson")
+	for _, tc := range []struct {
+		name string
+		err  error
+		keep bool
+	}{
+		{"complete", nil, true},
+		{"deadline", context.DeadlineExceeded, true},
+		{"canceled", context.Canceled, true},
+		{"discovery failure", errors.New("cannot browse mDNS"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			privateAliasLANCollect = func(_ context.Context, opts discovery.StreamOptions, timeout time.Duration) ([]models.LANDevice, error) {
+				if opts.Prober != nil || opts.UseCache || timeout != time.Second {
+					t.Fatalf("alias discovery must collect raw live sightings: %+v timeout=%v", opts, timeout)
+				}
+				return []models.LANDevice{device}, tc.err
+			}
+			got, err := privateAliasLANBrowse(context.Background())
+			if tc.keep {
+				if err != nil || !reflect.DeepEqual(got, []models.LANDevice{device}) {
+					t.Fatalf("confirmed sighting lost: rows=%+v err=%v", got, err)
+				}
+			} else if !errors.Is(err, tc.err) || len(got) != 0 {
+				t.Fatalf("unexpected discovery failure accepted: rows=%+v err=%v", got, err)
 			}
 		})
 	}
