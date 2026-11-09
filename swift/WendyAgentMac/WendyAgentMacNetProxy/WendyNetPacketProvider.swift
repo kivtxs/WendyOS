@@ -52,7 +52,7 @@ final class WendyNetPacketProvider: NEPacketTunnelProvider, @unchecked Sendable 
         settings.ipv4Settings = ipv4
 
         let dns = NEDNSSettings(servers: [Self.dnsServerAddress])
-        dns.matchDomains = ["mesh.wendy.internal", "cloud.wendy.dev"]
+        dns.matchDomains = ["wendy.internal", "cloud.wendy.dev"]
         dns.matchDomainsNoSearch = true
         settings.dnsSettings = dns
         settings.mtu = 1400
