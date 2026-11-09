@@ -58,7 +58,7 @@ struct VPNConfiguration: Codable {
         settings.ipv4Settings = ipv4
         settings.mtu = NSNumber(value: internet?.mtu ?? 1400)
         let dns = NEDNSSettings(servers: ["100.64.0.53"])
-        dns.matchDomains = internet == nil ? ["mesh.wendy.dev", "cloud.wendy.dev"] : [""]
+        dns.matchDomains = internet == nil ? ["wendy.internal", "mesh.wendy.dev", "cloud.wendy.dev"] : [""]
         dns.matchDomainsNoSearch = true
         // The cloud dashboard shares this zone. Public names refused by our
         // device resolver must still resolve through the system DNS service.

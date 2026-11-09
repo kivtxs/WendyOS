@@ -50,7 +50,7 @@ final class VPNInternetTests: XCTestCase {
         let settings = deviceOnly.networkSettings()
         XCTAssertEqual(settings.ipv4Settings?.includedRoutes?.map(\.destinationAddress), ["10.99.1.2", "100.64.0.53"])
         XCTAssertNil(settings.ipv6Settings)
-        XCTAssertEqual(settings.dnsSettings?.matchDomains, ["mesh.wendy.dev", "cloud.wendy.dev"])
+        XCTAssertEqual(settings.dnsSettings?.matchDomains, ["wendy.internal", "mesh.wendy.dev", "cloud.wendy.dev"])
         XCTAssertEqual(settings.dnsSettings?.allowFailover, true)
     }
     func testInternetCapturesBothFamiliesAndUsesGatewayLease() throws {
