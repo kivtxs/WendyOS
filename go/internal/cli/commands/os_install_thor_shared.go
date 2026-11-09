@@ -103,6 +103,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	if err != nil {
 		return err
 	}
+	enrolled := provJSON != nil
 
 	// Brief the user (Windows briefing includes the WinUSB driver note),
 	// then confirm before touching USB.
@@ -121,6 +122,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		return err
 	}
 	fmt.Printf("\n%s %s\n", tui.Dim("Target:"), tui.Device(dev.Label))
+	printProvisioningSummary(os.Stdout, name, creds, &enrolled)
 
 	if !force {
 		fmt.Println()
@@ -149,6 +151,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		if lf, lerr := os.Create(logPath); lerr == nil {
 			defer lf.Close()
 			fmt.Fprintf(lf, "wendy os install — Jetson AGX Thor — WendyOS %s\n\n", plan.version)
+			logProvisioningSummary(lf, name, creds, &enrolled)
 			logW = lf
 			defer func() { fmt.Println(tui.Dim("Full flash log: " + logPath)) }()
 		} else {

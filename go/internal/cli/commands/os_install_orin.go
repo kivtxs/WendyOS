@@ -85,6 +85,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err != nil {
 		return err
 	}
+	enrolled := provJSON != nil
 
 	if err := confirmOrinReady(opts); err != nil {
 		return err
@@ -94,6 +95,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 		return err
 	}
 	fmt.Printf("\n%s %s\n", tui.Dim("Target:"), tui.Device(dev.Describe()))
+	printProvisioningSummary(os.Stdout, name, creds, &enrolled)
 
 	if !opts.Force {
 		fmt.Println()
@@ -130,6 +132,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 		if lf, lerr := os.Create(logPath); lerr == nil {
 			defer lf.Close()
 			fmt.Fprintf(lf, "wendy os install — %s %s recovery — WendyOS %s\n\n", opts.DeviceType, opts.Storage, opts.Version)
+			logProvisioningSummary(lf, name, creds, &enrolled)
 			logW = lf
 			defer func() { fmt.Println(tui.Dim("Full flash log: " + logPath)) }()
 		} else {

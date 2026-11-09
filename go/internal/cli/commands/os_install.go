@@ -946,11 +946,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		targetDrive = selectedDrive
 	}
 
-	// Step 3: Confirm destructive write (unless --force).
-	if err := confirmOverwriteInternalDrive(targetDrive, force, yesOverwriteInternal); err != nil {
-		return err
-	}
-	if err := confirmEraseDrive(targetDrive, force); err != nil {
+	// Step 3: Settle Wi-Fi and the name, show them, then confirm the erase.
+	provCreds, provDeviceName, err := confirmDiskInstall(targetDrive, wifi, deviceName, force, yesOverwriteInternal)
+	if err != nil {
 		return err
 	}
 
@@ -989,7 +987,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	var imgInfo *imageInfo
-	var err error
 	if rootfsOnly && ver.InstallMode == "recovery" {
 		imgInfo, err = getRootfsOnlyImageInfo(device.Manifest, selectedVersion, storage)
 	} else {
@@ -1001,16 +998,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	// Refuse a too-small drive before the prompts, pre-enrollment and download.
 	if err := preflightImageFits(deviceKey, selectedVersion, storage, imgInfo, targetDrive, noBmap); err != nil {
-		return err
-	}
-
-	provCreds, err := resolveWiFiCredentialsList(wifi)
-	if err != nil {
-		return err
-	}
-
-	provDeviceName, err := resolveDeviceName(deviceName)
-	if err != nil {
 		return err
 	}
 
@@ -2779,6 +2766,27 @@ func confirmEraseDrive(d drive, force bool) error {
 	return nil
 }
 
+// confirmDiskInstall settles what first boot will apply and shows it before
+// asking to erase d, so nothing that changes the result is asked afterwards.
+func confirmDiskInstall(d drive, wifi wifiCLIOptions, deviceName string, force, yesOverwriteInternal bool) ([]wendyconf.WifiCredential, string, error) {
+	creds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return nil, "", err
+	}
+	name, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return nil, "", err
+	}
+	printProvisioningSummary(os.Stdout, name, creds, nil)
+	if err := confirmOverwriteInternalDrive(d, force, yesOverwriteInternal); err != nil {
+		return nil, "", err
+	}
+	if err := confirmEraseDrive(d, force); err != nil {
+		return nil, "", err
+	}
+	return creds, name, nil
+}
+
 // checkImageFitsDrive refuses a write the drive cannot hold, for an image
 // without a GPT that fitImageToDrive can rewrite: such an image's partitions
 // are only known to end within it, so a truncated copy may never boot.
@@ -2969,6 +2977,7 @@ func provisionConfigWithRetry(ctx context.Context, d drive, creds []wendyconf.Wi
 		}
 		err = provisionConfigPartitionFn(d, creds, deviceName, provisioningJSON, agent)
 	}
+	fmt.Println(provisioningWrittenLine(deviceName, creds, len(provisioningJSON) > 0))
 	return d, true, nil
 }
 
@@ -3145,6 +3154,8 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, seria
 	if err := img.SetPartition("wendy_conf", payload); err != nil {
 		return fmt.Errorf("writing config to firmware image: %w", err)
 	}
+
+	printProvisioningSummary(os.Stdout, provDeviceName, provCreds, nil)
 
 	// Flash with progress bar. Retries on failure: a busy port gets an extra
 	// offer to identify and kill whatever holds it; any other failure just

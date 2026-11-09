@@ -400,6 +400,7 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 	if err != nil {
 		return err
 	}
+	enrolled := provJSON != nil
 
 	if err := confirmDragonwingReady(board, plan.version, force); err != nil {
 		return err
@@ -414,6 +415,7 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 	}
 
 	fmt.Printf("\n%s %s\n", tui.Dim("Target:"), tui.Device(dragonwingTargetLabel(dev)))
+	printProvisioningSummary(os.Stdout, name, creds, &enrolled)
 
 	if !force {
 		fmt.Println()
@@ -442,6 +444,7 @@ func installDragonwing(ctx context.Context, board dragonwingBoard, version strin
 
 	logW, closeFlashLog := openDragonwingFlashLog(board, plan.version)
 	defer closeFlashLog()
+	logProvisioningSummary(logW, name, creds, &enrolled)
 
 	// The image holds the Wi-Fi PSK and any enrollment key in the clear, so it
 	// lives only for the flash rather than in the bundle cache.
