@@ -295,6 +295,7 @@ func (f fakeResolver) Resolve(name string) (meshid.Device, bool) {
 	device, ok := f.byName[name]
 	return device, ok
 }
+func (f fakeResolver) ResolveExact(name string) (meshid.Device, bool) { return f.Resolve(name) }
 
 func answerA(t *testing.T, s *DNSServer, qname string) (rcode int, ip string) {
 	t.Helper()
@@ -503,7 +504,7 @@ func TestDNSShortFriendlyPreservesRepeatedHyphens(t *testing.T) {
 func TestDNSShortFriendlyRejectsForeignTenantAndInvalidShapes(t *testing.T) {
 	s, addr, table := startTestDNS(t, "")
 	s.SetResolver(fakeResolver{byName: map[string]meshid.Device{"jetson": deviceForIndex(t, mustTenant(t, tenantB), 1)}})
-	for _, name := range []string{"jetson.wendy.internal.", "-jetson.wendy.internal.", "jetson-.wendy.internal.", "jetson.other.wendy.internal.", "jetson.a.b.wendy.internal.", "Ketson.wendy.internal."} {
+	for _, name := range []string{"jetson.wendy.internal.", "-jetson.wendy.internal.", "jetson-.wendy.internal.", "jetson.other.wendy.internal.", "jetson.a.b.wendy.internal.", "Ketson.wendy.internal.", "wendy.internal."} {
 		if resp := query(t, addr, name, dns.TypeA); resp.Rcode != dns.RcodeNameError {
 			t.Fatalf("%s = %v, want NXDOMAIN", name, resp)
 		}
@@ -511,4 +512,24 @@ func TestDNSShortFriendlyRejectsForeignTenantAndInvalidShapes(t *testing.T) {
 	if got := table.Stats().Allocated; got != 0 {
 		t.Fatalf("rejected names allocated %d VIPs", got)
 	}
+}
+
+// Old Resolver implementations remain valid for their org-qualified aliases,
+// but cannot opt into exact short labels by silently reusing normalization.
+type legacyOnlyNameResolver struct{ device meshid.Device }
+
+func (r legacyOnlyNameResolver) OrgSlug() string                      { return "acme" }
+func (r legacyOnlyNameResolver) Resolve(string) (meshid.Device, bool) { return r.device, true }
+
+func TestDNSShortFriendlyRequiresExactResolver(t *testing.T) {
+	s, addr, table := startTestDNS(t, "")
+	s.SetResolver(legacyOnlyNameResolver{deviceForIndex(t, mustTenant(t, tenantA), 1)})
+	if response := query(t, addr, "jetson--a.wendy.internal.", dns.TypeA); response.Rcode != dns.RcodeNameError {
+		t.Fatalf("normalizing resolver answered short exact name: %v", response)
+	}
+	if table.Stats().Allocated != 0 {
+		t.Fatal("unsupported exact lookup allocated a VIP")
+	}
+	name := "jetson--a.acme.mesh.wendy.internal."
+	wantSingleA(t, query(t, addr, name, dns.TypeA), name, "10.99.0.1")
 }

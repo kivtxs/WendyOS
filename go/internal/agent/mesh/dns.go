@@ -25,10 +25,8 @@ var meshDNSSuffixRE = func() string {
 	return `(?:` + strings.Join(suffixes, `|`) + `)`
 }()
 
-// canonicalUUIDRE matches the canonical textual UUID form (lowercase,
-// hyphenated) that meshid enforces at every identity boundary. Uppercase or
-// unhyphenated spellings are deliberately not accepted: they would resolve to
-// a device the peer's own identity never produces.
+// canonicalUUIDRE matches the canonical hyphenated UUID form after DNS ASCII
+// case folding. Device identity parsing still receives the canonical spelling.
 const canonicalUUIDRE = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 
 // meshNameRE accepts the canonical device-<uuid> form of the private mesh
@@ -241,7 +239,7 @@ func (s *DNSServer) handle(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	// The private namespace is owned locally. Invalid shapes must not leak to
 	// an upstream resolver or acquire an unrelated public answer.
-	if strings.HasSuffix(lower, "."+meshname.Suffix+".") {
+	if lower == meshname.Suffix+"." || strings.HasSuffix(lower, "."+meshname.Suffix+".") {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
@@ -280,13 +278,14 @@ func (s *DNSServer) answerShortFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	var device meshid.Device
-	var ok bool
-	if exact, supports := resolver.(ExactResolver); supports {
-		device, ok = exact.ResolveExact(name)
-	} else {
-		device, ok = resolver.Resolve(name)
+	exact, supports := resolver.(ExactResolver)
+	if !supports {
+		// A legacy normalizing resolver cannot distinguish valid repeated
+		// hyphens, so it must not answer the exact short-name namespace.
+		s.reply(w, r, dns.RcodeNameError)
+		return
 	}
+	device, ok := exact.ResolveExact(name)
 	if !ok || device.Tenant() != id.tenant {
 		s.reply(w, r, dns.RcodeNameError)
 		return
