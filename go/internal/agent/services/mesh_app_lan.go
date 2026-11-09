@@ -116,8 +116,10 @@ func (d *MeshDialer) meshDialApplicationTLS(ctx context.Context, address netip.A
 }
 
 func (d *MeshDialer) dialApplicationSocket(ctx context.Context, network, address string) (net.Conn, error) {
+	bounded, cancel := context.WithTimeout(ctx, lanBudget)
+	defer cancel()
 	if d.appSocketDial != nil {
-		return d.appSocketDial(ctx, network, address)
+		return d.appSocketDial(bounded, network, address)
 	}
-	return (&net.Dialer{}).DialContext(ctx, network, address)
+	return (&net.Dialer{}).DialContext(bounded, network, address)
 }
