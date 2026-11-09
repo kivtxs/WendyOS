@@ -173,6 +173,10 @@ Existing UUID names under `mesh.wendy.internal` and `cloud.wendy.dev`, and the
 older org-qualified friendly aliases, remain accepted. The new short friendly
 form does not require knowing or fetching an organization slug.
 
+A fresh friendly-name lookup collects LAN announcements for up to three seconds
+so a quick reply cannot hide a delayed conflicting name. Conflicting device
+identities return no address; use the UUID form to select one device explicitly.
+
 The CLI also accepts these names in `--device` without a desktop VPN. Its
 friendly-name selection needs an authenticated mesh directory, Cloud inventory,
 or a previously trusted device binding for an offline LAN peer. An mDNS name by
