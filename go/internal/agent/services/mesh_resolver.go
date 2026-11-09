@@ -31,6 +31,10 @@ type MeshResolver struct {
 var _ mesh.Resolver = (*MeshResolver)(nil)
 var _ mesh.ExactResolver = (*MeshResolver)(nil)
 
+// FriendlyNameLANBrowseBudget allows delayed LAN answers and conflicting name
+// claims to arrive before a fresh friendly-name binding is selected.
+const FriendlyNameLANBrowseBudget = 3 * time.Second
+
 func NewMeshResolver(logger *zap.Logger, roster *MeshRoster, browse func(context.Context) ([]models.LANDevice, error)) *MeshResolver {
 	return &MeshResolver{logger: logger, roster: roster, browse: browse}
 }
@@ -150,7 +154,7 @@ func (r *MeshResolver) resolveLAN(name string, exact bool) nameResolution {
 	if !ok || r.browse == nil {
 		return result
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), FriendlyNameLANBrowseBudget)
 	defer cancel()
 	devices, err := r.browse(ctx)
 	if err != nil {

@@ -1306,7 +1306,7 @@ func main() {
 		// sightings collected before that deadline rather than letting the
 		// general discovery wrapper discard them with context.DeadlineExceeded.
 		// They remain hints: connection establishment proves the principal.
-		devices, err := discovery.CollectLAN(ctx, discovery.StreamOptions{}, time.Second)
+		devices, err := discovery.CollectLANUntilTimeout(ctx, discovery.StreamOptions{}, services.FriendlyNameLANBrowseBudget)
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			return nil, err
 		}
