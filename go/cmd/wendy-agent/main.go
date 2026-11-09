@@ -1272,14 +1272,15 @@ func main() {
 	// than never starting at all.
 	meshRoster = services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), certPEM, keyPEM, chainPEM)
 	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
-		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
-			Types:   []models.InterfaceType{models.InterfaceLAN},
-			Timeout: 1 * time.Second,
-		})
-		if err != nil {
+		// The resolver's budget can end at the scan deadline. Keep confirmed
+		// sightings collected before that deadline rather than letting the
+		// general discovery wrapper discard them with context.DeadlineExceeded.
+		// They remain hints: connection establishment proves the principal.
+		devices, err := discovery.CollectLAN(ctx, discovery.StreamOptions{}, time.Second)
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			return nil, err
 		}
-		return col.LANDevices, nil
+		return devices, nil
 	}
 	meshResolver := services.NewMeshResolver(logger, meshRoster, meshBrowse)
 	meshResolver.SetMeshSnapshot(func() localmesh.NodeSnapshot {
