@@ -37,7 +37,7 @@ func TestFriendlyPreservesLabelsAndReservesIdentityNames(t *testing.T) {
 			t.Fatalf("Friendly(%q) = %q,%v", name, host, ok)
 		}
 	}
-	for _, name := range []string{"", "jetson.local", " jetson", "1jetson", "jetson-", "jetson_a", strings.Repeat("a", 64), "device-00000001-4000-8000-0000-000000000001"} {
+	for _, name := range []string{"", "jetson.local", " jetson", "1jetson", "jetson-", "jetson_a", "Kelvin", strings.Repeat("a", 64), "device-00000001-4000-8000-0000-000000000001"} {
 		if host, ok := Friendly(name); ok {
 			t.Fatalf("accepted %q as %q", name, host)
 		}

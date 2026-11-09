@@ -46,6 +46,13 @@ func Suffixes() []string { return []string{Suffix, PreviousSuffix, LegacySuffix}
 // identity-based device-<uuid> shape is reserved even if a device uses it as its
 // display name.
 func FriendlyLabel(name string) (string, bool) {
+	// DNS label case folding is ASCII-only. Validate before lowercasing so
+	// Unicode compatibility characters cannot create aliases of another device.
+	for _, c := range name {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return "", false
+		}
+	}
 	name = strings.ToLower(name)
 	if len(name) == 0 || len(name) > 63 || name[0] < 'a' || name[0] > 'z' || name[len(name)-1] == '-' {
 		return "", false
