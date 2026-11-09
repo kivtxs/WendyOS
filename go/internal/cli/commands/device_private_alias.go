@@ -20,7 +20,7 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 )
 
-const privateAliasDiscoveryTimeout = 2 * time.Second
+const privateAliasDiscoveryTimeout = 3 * time.Second
 
 type privateDeviceAlias struct {
 	host  string
@@ -70,11 +70,12 @@ func parsePrivateDeviceAlias(value string) (privateDeviceAlias, bool, error) {
 }
 
 var privateAliasMeshRead = func(ctx context.Context) (sessionbroker.OperatorDirectory, error) { return meshDirectoryRead(ctx) }
-var privateAliasLANCollect = discovery.CollectLAN
+var privateAliasLANCollect = discovery.CollectLANUntilTimeout
 var privateAliasLANBrowse = func(ctx context.Context) ([]models.LANDevice, error) {
-	// CollectLAN returns confirmed sightings even when the surrounding discovery
-	// budget expires during stream shutdown. Discover drops those partial rows.
-	devices, err := privateAliasLANCollect(ctx, discovery.StreamOptions{}, time.Second)
+	// Keep the entire browse window: the normal picker collector can settle on
+	// the local agent before a delayed peer or conflicting name responds. The
+	// collector also returns confirmed sightings on a budget-expired shutdown.
+	devices, err := privateAliasLANCollect(ctx, discovery.StreamOptions{}, privateAliasDiscoveryTimeout)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return nil, err
 	}

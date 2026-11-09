@@ -96,7 +96,7 @@ func TestPrivateDeviceAliasLANBrowseRetainsConfirmedRowsOnTimeout(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			privateAliasLANCollect = func(_ context.Context, opts discovery.StreamOptions, timeout time.Duration) ([]models.LANDevice, error) {
-				if opts.Prober != nil || opts.UseCache || timeout != time.Second {
+				if opts.Prober != nil || opts.UseCache || timeout != 3*time.Second {
 					t.Fatalf("alias discovery must collect raw live sightings: %+v timeout=%v", opts, timeout)
 				}
 				return []models.LANDevice{device}, tc.err
