@@ -49,7 +49,7 @@ func TestApplicationRetirementClosesTrafficDuringControlGrace(t *testing.T) {
 		defer conn.Close()
 		_, _ = io.Copy(conn, conn)
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	manager := udpmessage.NewManager()
 	defer manager.Close()
@@ -73,9 +73,24 @@ func TestApplicationRetirementClosesTrafficDuringControlGrace(t *testing.T) {
 	if _, err := io.ReadFull(conn, reply); err != nil || string(reply) != "ready" {
 		t.Fatalf("app echo=%q: %v", reply, err)
 	}
-	retire()
+	// No caller is reading now. Retirement must abort the raw transport rather
+	// than wait for a graceful TLS close_notify to cross the in-memory pipe.
+	retired := make(chan struct{})
+	go func() { retire(); close(retired) }()
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("application retirement blocked on an unread peer")
+	}
 	if ctx.Err() != nil {
 		t.Fatal("retirement canceled the control-plane response grace")
+	}
+	done := make(chan struct{})
+	go func() { workers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("retired endpoint workers did not drain without a peer read")
 	}
 	if _, err := conn.Read(reply); err == nil {
 		t.Fatal("old app transport survived retirement")
@@ -85,13 +100,6 @@ func TestApplicationRetirementClosesTrafficDuringControlGrace(t *testing.T) {
 	if raw, err := listener.Dial(ctx); err == nil {
 		raw.Close()
 		t.Fatal("retired application callback still admitted transports")
-	}
-	done := make(chan struct{})
-	go func() { workers.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("retired endpoint workers did not drain")
 	}
 }
 
