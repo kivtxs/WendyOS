@@ -106,7 +106,48 @@ func TestMeshAppDialerFollowsLateRuntimeWithoutRestart(t *testing.T) {
 	_ = conn.Close()
 	available = false
 	assertUnavailable()
-	if probes.lookups != 0 || probes.lanDials != 0 || probes.brokerDials != 0 {
-		t.Fatalf("app used fallback: %+v", probes)
+	if probes.lookups == 0 || probes.lanDials != 0 || probes.brokerDials != 0 {
+		t.Fatalf("missing route must check LAN without administrative fallback: %+v", probes)
+	}
+}
+
+func TestMeshAppDialerUsesAuthorizedLANWhenMeshHasNoRoute(t *testing.T) {
+	d, probes := testDialer()
+	peer := appTestMeshDevice(t)
+	probes.lanAddr = "192.0.2.10:50052"
+	d.SetLocalMeshDialer(func(context.Context, meshid.Device, uint16) (net.Conn, error) {
+		return nil, meshsession.ErrNoRoute
+	})
+	var calls int
+	d.appLANDial = func(_ context.Context, address string, device meshid.Device, port uint16) (net.Conn, error) {
+		calls++
+		if address != probes.lanAddr || device != peer || port != 8080 {
+			t.Fatalf("LAN app target = %s %s %d", address, device, port)
+		}
+		local, remote := net.Pipe()
+		_ = remote.Close()
+		return local, nil
+	}
+	for range 2 {
+		conn, mode, err := NewMeshAppDialer(d).DialDevice(context.Background(), peer, 8080)
+		if err != nil || mode != "lan-direct" {
+			t.Fatalf("LAN app mode=%q err=%v", mode, err)
+		}
+		_ = conn.Close()
+	}
+	if calls != 2 || probes.lookups != 1 || probes.lanDials != 0 || probes.brokerDials != 0 {
+		t.Fatalf("LAN application dials=%d probes=%+v", calls, probes)
+	}
+}
+
+func TestMeshAppDialerLANDenialNeverUsesAdministrativeService(t *testing.T) {
+	d, probes := testDialer()
+	probes.lanAddr = "192.0.2.10:50052"
+	d.appLANDial = func(context.Context, string, meshid.Device, uint16) (net.Conn, error) {
+		return nil, meshsession.ErrDenied
+	}
+	_, _, err := NewMeshAppDialer(d).DialDevice(context.Background(), appTestMeshDevice(t), 8080)
+	if !errors.Is(err, meshsession.ErrDenied) || probes.lanDials != 0 || probes.brokerDials != 0 {
+		t.Fatalf("LAN denial=%v probes=%+v", err, probes)
 	}
 }

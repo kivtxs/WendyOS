@@ -12,8 +12,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-// MeshAppDialer is the opt-in local mesh VIP path. It uses authenticated app
-// sessions or an explicitly advertised native mTLS agent service. The existing cloud byte relay lacks a
+// MeshAppDialer uses authenticated local mesh app sessions, or a principal-pinned
+// LAN agent connection when no local mesh route exists. The existing cloud byte relay lacks a
 // device-originated app admission protocol and cannot safely carry these
 // app flows until that protocol and its service policy are implemented.
 type MeshAppDialer struct{ mesh *MeshDialer }
@@ -32,15 +32,16 @@ func (a *MeshAppDialer) DialDevice(ctx context.Context, device meshid.Device, po
 	a.mesh.mu.Lock()
 	dial := a.mesh.localDial
 	a.mesh.mu.Unlock()
-	if dial == nil {
-		return nil, "", meshsession.ErrNoRoute
-	}
 	started := a.mesh.now()
-	conn, err := dial(ctx, device, port)
+	var conn net.Conn
+	err := meshsession.ErrNoRoute
+	if dial != nil {
+		conn, err = dial(ctx, device, port)
+	}
 	// A Babel route can be replaced while QUIC sends its first packet.
 	// Retry one kernel route failure after convergence; never retry an
 	// authenticated app-port denial or a missing signed route.
-	if errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {
+	if dial != nil && (errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH)) {
 		select {
 		case <-ctx.Done():
 			err = ctx.Err()
@@ -51,8 +52,32 @@ func (a *MeshAppDialer) DialDevice(ctx context.Context, device meshid.Device, po
 	ms := float64(a.mesh.now().Sub(started).Milliseconds())
 	if err != nil {
 		a.mesh.metrics.RecordDial(device, "local-mesh", "error", ms)
+		// A denial, identity failure, or transport failure is authoritative and
+		// never triggers another admission path. Only absence of a local mesh
+		// route permits the independently authenticated LAN application path.
+		if errors.Is(err, meshsession.ErrNoRoute) {
+			return a.dialLAN(ctx, device, port)
+		}
 		return nil, "local-mesh", err
 	}
 	a.mesh.metrics.RecordDial(device, "local-mesh", "ok", ms)
 	return conn, "local-mesh", nil
+}
+
+func (a *MeshAppDialer) dialLAN(ctx context.Context, device meshid.Device, port uint16) (net.Conn, string, error) {
+	address, found := a.mesh.lanAddr(ctx, device)
+	if !found {
+		return nil, "", meshsession.ErrNoRoute
+	}
+	started := a.mesh.now()
+	conn, err := a.mesh.appLANDial(ctx, address, device, port)
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	a.mesh.metrics.RecordDial(device, "lan-direct", result, float64(a.mesh.now().Sub(started).Milliseconds()))
+	if err != nil {
+		return nil, "", err
+	}
+	return conn, "lan-direct", nil
 }

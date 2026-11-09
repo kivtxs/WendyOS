@@ -85,6 +85,7 @@ type MeshDialer struct {
 	// Seams (overridden in tests).
 	lanLookup   func(ctx context.Context, device meshid.Device) (hostport string, ok bool)
 	dialLAN     func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
+	appLANDial  func(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error)
 	serviceDial func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
 	localDial   func(ctx context.Context, peer meshid.Device, port uint16) (net.Conn, error)
 	selfDial    func(ctx context.Context, port uint16) (net.Conn, error)
@@ -204,6 +205,7 @@ func NewMeshDialer(logger *zap.Logger, certPEM, keyPEM, chainPEM string, metrics
 	}
 	d.lanLookup = d.discoverOnLAN
 	d.dialLAN = d.meshDialLAN
+	d.appLANDial = d.meshDialAppLAN
 	return d
 }
 
