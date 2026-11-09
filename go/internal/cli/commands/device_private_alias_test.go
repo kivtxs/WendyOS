@@ -279,6 +279,96 @@ func TestPrivateDeviceAliasFrontDoorMeshAndCloud(t *testing.T) {
 	}
 }
 
+func TestPrivateDeviceAliasRefreshesCloudCredentialsBeforeInventory(t *testing.T) {
+	privateAliasConfig(t, nil)
+	stubPrivateAliasNetwork(t, privateAliasSources{})
+	prepared := false
+	privateAliasPrepareAuth = func(_ context.Context, auth *config.AuthConfig) error {
+		if auth.Certificates[0].TenantUUID() != privateAliasTenant {
+			t.Error("certificate preparation changed organization")
+		}
+		prepared = true
+		return nil
+	}
+	privateAliasCloudFetch = func(_ context.Context, _ *config.AuthConfig, _ bool) ([]*cloudpbv2.Asset, error) {
+		if !prepared {
+			return nil, errors.New("TLS client certificate expired")
+		}
+		return []*cloudpbv2.Asset{privateAliasTestCloud(privateAliasDevice, "jetson")}, nil
+	}
+	old := connectDefaultCloudAssetV2Fn
+	t.Cleanup(func() { connectDefaultCloudAssetV2Fn = old })
+	connectDefaultCloudAssetV2Fn = func(_ context.Context, auth *config.AuthConfig, asset *cloudpbv2.Asset, _ string) (*grpcclient.AgentConnection, error) {
+		if !prepared || auth.Certificates[0].TenantUUID() != privateAliasTenant || asset.GetId() != privateAliasDevice {
+			t.Fatal("Cloud connection did not use prepared selected-organization inventory")
+		}
+		return &grpcclient.AgentConnection{IsMTLS: true}, nil
+	}
+	selected, matched, err := connectNamedDeviceSelector(context.Background(), "jetson.wendy.internal", true)
+	if err != nil || !matched || selected == nil {
+		t.Fatalf("refreshable Cloud-only alias failed: prepared=%v matched=%v err=%v", prepared, matched, err)
+	}
+}
+
+func TestPrivateDeviceAliasCloudPreparationFailureDoesNotListInventory(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*config.AuthConfig) error
+	}{
+		{"renewal refused", func(*config.AuthConfig) error { return errors.New("renewal refused") }},
+		{"organization changed", func(auth *config.AuthConfig) error {
+			auth.Certificates[0].PrincipalURI = certs.DeviceSPIFFEURI(privateAliasOtherTenant, privateAliasDevice)
+			return nil
+		}},
+		{"certificate removed", func(auth *config.AuthConfig) error { auth.Certificates = nil; return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubPrivateAliasNetwork(t, privateAliasSources{lan: []models.LANDevice{privateAliasTestLAN(privateAliasDevice, "jetson")}})
+			privateAliasPrepareAuth = func(_ context.Context, auth *config.AuthConfig) error { return tc.prepare(auth) }
+			listed := false
+			privateAliasCloudFetch = func(context.Context, *config.AuthConfig, bool) ([]*cloudpbv2.Asset, error) {
+				listed = true
+				return nil, nil
+			}
+			auth := privateAliasTestAuth()
+			sources := gatherPrivateAliasSources(context.Background(), &auth)
+			if listed || sources.cloudErr == nil || len(sources.lan) != 1 {
+				t.Fatalf("unprepared inventory listed or independent LAN discovery lost: listed=%v sources=%+v", listed, sources)
+			}
+		})
+	}
+}
+
+func TestPrivateDeviceAliasRejectsTruncatedFriendlyMeshDirectory(t *testing.T) {
+	auth := privateAliasTestAuth()
+	tenant, _ := meshid.ParseTenant(privateAliasTenant)
+	friendly, _, _ := parsePrivateDeviceAlias("jetson.wendy.internal")
+	uuidAlias, _, _ := parsePrivateDeviceAlias("device-" + privateAliasDevice + ".wendy.internal")
+	snapshot := privateAliasTestMesh(t, privateAliasDevice, "jetson")
+	snapshot.Truncated = true
+	for _, tc := range []struct {
+		name    string
+		alias   privateDeviceAlias
+		cloud   []*cloudpbv2.Asset
+		wantErr bool
+	}{
+		{"friendly mesh alone", friendly, nil, true},
+		{"Cloud cannot exclude hidden mesh collision", friendly, []*cloudpbv2.Asset{privateAliasTestCloud(privateAliasDevice, "jetson")}, true},
+		{"UUID remains usable", uuidAlias, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, err := selectPrivateAliasCandidate(tc.alias, tenant, nil, &auth, privateAliasSources{mesh: snapshot, cloud: tc.cloud}, time.Now())
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "incomplete mesh directory") {
+					t.Fatalf("incomplete collision authority accepted: %+v err=%v", candidate, err)
+				}
+			} else if err != nil || candidate.mesh != snapshot.Devices[0].Selector {
+				t.Fatalf("explicit UUID route lost: %+v err=%v", candidate, err)
+			}
+		})
+	}
+}
+
 func TestPrivateDeviceAliasSavedBindingRefusalPrecedesDiscovery(t *testing.T) {
 	privateAliasConfig(t, map[string]config.DevicePin{"jetson.wendy.internal": {Principal: certs.DeviceSPIFFEURI(privateAliasOtherTenant, privateAliasDevice)}})
 	stubPrivateAliasNetwork(t, privateAliasSources{})

@@ -100,6 +100,7 @@ type privateAliasSources struct {
 
 func gatherPrivateAliasSources(ctx context.Context, auth *config.AuthConfig) privateAliasSources {
 	var sources privateAliasSources
+	selectedTenant := auth.Certificates[0].TenantUUID()
 	var work sync.WaitGroup
 	work.Add(3)
 	bounded, cancel := context.WithTimeout(ctx, privateAliasDiscoveryTimeout)
@@ -108,6 +109,16 @@ func gatherPrivateAliasSources(ctx context.Context, auth *config.AuthConfig) pri
 	go func() { defer work.Done(); sources.lan, _ = privateAliasLANBrowse(bounded) }()
 	go func() {
 		defer work.Done()
+		// Inventory uses mTLS too. Renew the selected session before listing,
+		// rather than waiting until an asset has already been found to dial.
+		if err := privateAliasPrepareAuth(bounded, auth); err != nil {
+			sources.cloudErr = err
+			return
+		}
+		if len(auth.Certificates) == 0 || auth.Certificates[0].TenantUUID() != selectedTenant {
+			sources.cloudErr = errors.New("selected organization changed during private alias discovery")
+			return
+		}
 		sources.cloud, sources.cloudErr = privateAliasCloudFetch(bounded, auth, false)
 	}()
 	work.Wait()
@@ -159,6 +170,12 @@ func selectPrivateAliasCandidate(alias privateDeviceAlias, tenant meshid.Tenant,
 	}
 	snapshot := sources.mesh
 	if snapshot.State == "ready" && snapshot.Captured <= now.Add(time.Second).UnixMilli() && now.UnixMilli()-snapshot.Captured <= 10000 {
+		// A bounded directory may omit another device with the same name. Its
+		// visible rows still route an explicit UUID, but cannot exclude friendly
+		// name collisions, even when Cloud or a saved binding agrees with a row.
+		if snapshot.Truncated && alias.uuid == "" {
+			return privateAliasCandidate{}, fmt.Errorf("private device alias %q cannot be resolved safely from an incomplete mesh directory; use device-<uuid>.wendy.internal or a canonical mesh/Cloud selector", alias.host)
+		}
 		for _, row := range snapshot.Devices {
 			device, err := meshid.DeviceFromPrincipal(row.Principal)
 			if err != nil || device.Tenant() != tenant || row.Device != device.UUID().String() || row.Tenant != tenant.String() || row.Expires <= now.UnixMilli() || row.Selector != sessionbroker.MeshSelector(device) || !matches(row.Name, device) {
