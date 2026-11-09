@@ -62,6 +62,7 @@ SHARED_SWIFT_PROTOS=(
   "$PROTO_DIR/wendy/agent/services/v2/robot_arm_service.proto"
   "$PROTO_DIR/wendy/agent/services/v2/bluetooth_service.proto"
   "$PROTO_DIR/wendy/agent/services/v2/local_mesh_admin_service.proto"
+  "$PROTO_DIR/wendy/agent/services/v2/build_delivery_service.proto"
   "$PROTO_DIR/wendylite/v1/sensorlink.proto"
 )
 SHARED_SWIFT_MESSAGE_PROTOS=(
@@ -137,6 +138,7 @@ if [ -n "${1:-}" ]; then
   done
   exit 0
 fi
+
 
 echo "Generating OpenTelemetry gRPC code..."
 mkdir -p "$OUT_DIR/OpenTelemetryGRPC"
