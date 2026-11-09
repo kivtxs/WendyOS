@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -77,11 +78,14 @@ func TestMeshAppLANUsesPinnedMTLSAndRunningAppAdmission(t *testing.T) {
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() { _ = server.Serve(listener) }()
 	dialer := NewMeshDialer(zap.NewNop(), clientCert, clientKey, root, nil)
+	dialer.appTLSLookup = func(context.Context, meshid.Device) (netip.AddrPort, bool) { return netip.AddrPort{}, false }
 	dialer.lanLookup = func(context.Context, meshid.Device) (string, bool) { return listener.Addr().String(), true }
 	dialer.SetLocalMeshDialer(func(context.Context, meshid.Device, uint16) (net.Conn, error) { return nil, meshsession.ErrNoRoute })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	flow, mode, err := NewMeshAppDialer(dialer).DialDevice(ctx, peer, 8080)
+	setup, stopSetup := context.WithCancel(ctx)
+	flow, mode, err := NewMeshAppDialer(dialer).DialDevice(setup, peer, 8080)
+	stopSetup()
 	if err != nil || mode != "lan-direct" {
 		t.Fatalf("LAN app mode=%q err=%v", mode, err)
 	}

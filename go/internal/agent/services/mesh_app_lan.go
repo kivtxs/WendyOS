@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/meshsession"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshappstream"
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
@@ -17,6 +19,17 @@ import (
 // then MeshDial authorizes the requested port against the live app registry.
 func (d *MeshDialer) meshDialAppLAN(ctx context.Context, hostport string, device meshid.Device, port uint16) (net.Conn, error) {
 	identity := d.identity()
+	// New agents advertise their dedicated app endpoint, which stays available
+	// with mesh carrier participation disabled. Legacy peers retain MeshDial.
+	if d.appTLSLookup != nil {
+		if address, found := d.appTLSLookup(ctx, device); found {
+			credentials, err := localmesh.NewCredentials(identity.certPEM, identity.chainPEM, identity.keyPEM)
+			if err != nil {
+				return nil, err
+			}
+			return meshsession.DialTLSWithDialer(ctx, credentials, device, address, port, d.applicationLANDial(identity))
+		}
+	}
 	config, err := mtls.NewClientTLSConfigExpectingDevice(identity.certPEM, identity.chainPEM, identity.keyPEM, d.logger, device)
 	if err != nil {
 		return nil, err
@@ -32,7 +45,7 @@ func (d *MeshDialer) meshDialAppLAN(ctx context.Context, hostport string, device
 		_ = cc.Close()
 		return nil, err
 	}
-	return &ownedAppConnection{Conn: conn, closeTransport: cc.Close}, nil
+	return d.ownApplicationConnection(conn, cc.Close, identity)
 }
 
 // Each LAN dial owns its agent connection. The wrapped application stream keeps
@@ -42,6 +55,7 @@ type ownedAppConnection struct {
 	closeTransport func() error
 	once           sync.Once
 	closeErr       error
+	onClose        func()
 }
 
 func (c *ownedAppConnection) Close() error {
@@ -50,8 +64,32 @@ func (c *ownedAppConnection) Close() error {
 		if err := c.closeTransport(); c.closeErr == nil {
 			c.closeErr = err
 		}
+		if c.onClose != nil {
+			c.onClose()
+		}
 	})
 	return c.closeErr
+}
+
+func (d *MeshDialer) ownApplicationConnection(conn net.Conn, closeTransport func() error, identity meshIdentity) (net.Conn, error) {
+	owned := &ownedAppConnection{Conn: conn, closeTransport: closeTransport}
+	d.mu.Lock()
+	if d.ident != identity {
+		d.mu.Unlock()
+		_ = owned.Close()
+		return nil, net.ErrClosed
+	}
+	if d.appFlows == nil {
+		d.appFlows = make(map[*ownedAppConnection]struct{})
+	}
+	d.appFlows[owned] = struct{}{}
+	owned.onClose = func() {
+		d.mu.Lock()
+		delete(d.appFlows, owned)
+		d.mu.Unlock()
+	}
+	d.mu.Unlock()
+	return owned, nil
 }
 
 func (c *ownedAppConnection) CloseWrite() error {
@@ -59,4 +97,14 @@ func (c *ownedAppConnection) CloseWrite() error {
 		return half.CloseWrite()
 	}
 	return c.Close()
+}
+
+func (d *MeshDialer) applicationLANDial(identity meshIdentity) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return d.ownApplicationConnection(conn, func() error { return nil }, identity)
+	}
 }

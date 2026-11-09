@@ -732,6 +732,9 @@ func main() {
 		logger.Fatal("Invalid agent port", zap.String("port", agentPort), zap.Error(err))
 	}
 	mtlsPortNum := agentPortNum + 1
+	var applicationRelayMu sync.RWMutex
+	var applicationRelayListener *meshsession.ApplicationListener
+	var retireApplicationEndpoints func()
 
 	// startTunnelBroker launches the tunnel broker presence loop in the background.
 	// ProvisioningInfo() is called inside the goroutine to avoid re-entering the
@@ -760,7 +763,16 @@ func main() {
 				}
 				client := &cloudrelay.Agent{Endpoint: endpoint, Verifier: &cloudrelay.Verifier{Issuer: issuer},
 					StateDir: filepath.Join(configPath, "cloud-relay"), Credentials: provisioningSvc.ProvisioningCerts,
-					Logger: logger, MTLSPort: mtlsPortNum}
+					Logger: logger, MTLSPort: mtlsPortNum,
+					ApplicationDial: func(ctx context.Context) (net.Conn, error) {
+						applicationRelayMu.RLock()
+						listener := applicationRelayListener
+						applicationRelayMu.RUnlock()
+						if listener == nil {
+							return nil, net.ErrClosed
+						}
+						return listener.Dial(ctx)
+					}}
 				client.Run(ctx)
 				return
 			}
@@ -1057,6 +1069,20 @@ func main() {
 		}
 		localMeshLife.Start(ctx, func(meshCtx context.Context, launch func(func())) {
 			meshCtx, stopSessions := context.WithCancel(meshCtx)
+			applicationListener, retireEndpoints := startApplicationEndpoints(meshCtx, credentials, meshIngress, appUDPMessages, accessPolicy.AllowsNetwork, logger, launch)
+			applicationRelayMu.Lock()
+			applicationRelayListener = applicationListener
+			retireApplicationEndpoints = retireEndpoints
+			applicationRelayMu.Unlock()
+			launch(func() {
+				<-meshCtx.Done()
+				applicationRelayMu.Lock()
+				if applicationRelayListener == applicationListener {
+					applicationRelayListener = nil
+					retireApplicationEndpoints = nil
+				}
+				applicationRelayMu.Unlock()
+			})
 			appClient, err := meshsession.NewClient(credentials, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app client unavailable", zap.Error(err))
@@ -1157,6 +1183,7 @@ func main() {
 		meshMetrics.Collect(ctx)
 	}()
 	meshDialer = services.NewMeshDialer(logger, certPEM, keyPEM, chainPEM, meshMetrics)
+	meshDialer.SetCloudEndpoint(cloudHost)
 	meshDialer.SetSelfDialer(func(dialCtx context.Context, port uint16) (net.Conn, error) {
 		bounded, cancel := context.WithTimeout(dialCtx, 5*time.Second)
 		defer cancel()
@@ -1242,11 +1269,14 @@ func main() {
 		appClient := localMeshAppClient
 		localMeshMu.RUnlock()
 		if snapshot == nil || appClient == nil {
-			return nil, meshsession.ErrNoRoute
+			return meshDialer.DialApplicationUDPWithoutMesh(dialCtx, peer, port, options)
 		}
 		address, err := meshsession.ResolveApp(snapshot(), peer)
 		if err != nil {
 			appClient.WithdrawRoute(peer)
+			if errors.Is(err, meshsession.ErrNoRoute) {
+				return meshDialer.DialApplicationUDPWithoutMesh(dialCtx, peer, port, options)
+			}
 			return nil, err
 		}
 		if address.Transport == localmesh.AppTLS {
@@ -1460,6 +1490,28 @@ func main() {
 		keyPEM := string(keyData)
 		cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
 		if activeProvisioningIdentity.Changed(certPEM, chainPEM, keyPEM, orgID, assetID) {
+			// Retire the old app identity before allowing the provisioning response
+			// grace period. No old app credential or LAN capability survives it.
+			applicationRelayMu.Lock()
+			retire := retireApplicationEndpoints
+			retireApplicationEndpoints, applicationRelayListener = nil, nil
+			applicationRelayMu.Unlock()
+			if retire != nil {
+				retire()
+			}
+			meshDialer.UpdateCloudIdentity("", "", "", "")
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := localMeshLife.Stop(stopCtx); err != nil {
+				logger.Error("Retiring previous enrollment's app sessions failed", zap.Error(err))
+			}
+			stopCancel()
+			localMeshMu.Lock()
+			localMeshSnapshot, localMeshAppClient = nil, nil
+			localMeshMu.Unlock()
+			_ = meshProxy.Close()
+			if udpProxy != nil {
+				_ = udpProxy.Close()
+			}
 			// The persisted identity is already durable. Let the provisioning RPC
 			// finish, then restart so the app server, pool, and every carrier
 			// replace their credentials together. Cancellation enters normal shutdown,
@@ -1475,7 +1527,7 @@ func main() {
 		// server and tunnel broker above, it consumes cert material, and BLE
 		// first-boot enrollment happens while the agent is running, so the
 		// boot-time snapshot is empty on virtually every new device.
-		meshDialer.UpdateIdentity(certPEM, keyPEM, chainPEM)
+		meshDialer.UpdateCloudIdentity(cloudHost, certPEM, keyPEM, chainPEM)
 		// Same story for the friendly-name roster/resolver: the boot-time
 		// snapshot has no certificate and so no device principal, meaning the
 		// roster cannot authenticate a sync and the resolver rejects every LAN
@@ -1531,7 +1583,7 @@ func main() {
 		localMeshMu.Lock()
 		localMeshSnapshot, localMeshAppClient = nil, nil
 		localMeshMu.Unlock()
-		meshDialer.UpdateIdentity("", "", "")
+		meshDialer.UpdateCloudIdentity("", "", "", "")
 		meshRoster.UpdateIdentity("", "", "", "")
 		if reportedState != nil {
 			reportedState.UpdateIdentity("", "", "", "")

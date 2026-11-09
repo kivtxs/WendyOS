@@ -83,7 +83,11 @@ func DialTLSWithDialer(ctx context.Context, credentials *localmesh.Credentials, 
 	if dial == nil {
 		return nil, errors.New("missing app network dialer")
 	}
-	return dialTLSWithDialer(ctx, credentials, peer, address, port, nil, dial)
+	conn, err := dialTLSWithDialer(ctx, credentials, peer, address, port, nil, dial)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 func dialTLSRequest(ctx context.Context, credentials *localmesh.Credentials, peer meshid.Device, address netip.AddrPort, port uint16, datagrams *uint16) (*tlsAppConn, error) {

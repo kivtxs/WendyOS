@@ -12,10 +12,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
 )
 
-// MeshAppDialer uses authenticated local mesh app sessions, or a principal-pinned
-// LAN agent connection when no local mesh route exists. The existing cloud byte relay lacks a
-// device-originated app admission protocol and cannot safely carry these
-// app flows until that protocol and its service policy are implemented.
+// MeshAppDialer prefers authenticated local mesh app sessions. Without a route,
+// it uses a principal-pinned LAN agent or the device-only Cloud app capability.
+// Every path independently admits the destination's live application port.
 type MeshAppDialer struct{ mesh *MeshDialer }
 
 var _ mesh.PeerDialer = (*MeshAppDialer)(nil)
@@ -67,7 +66,7 @@ func (a *MeshAppDialer) DialDevice(ctx context.Context, device meshid.Device, po
 func (a *MeshAppDialer) dialLAN(ctx context.Context, device meshid.Device, port uint16) (net.Conn, string, error) {
 	address, found := a.mesh.lanAddr(ctx, device)
 	if !found {
-		return nil, "", meshsession.ErrNoRoute
+		return a.dialCloud(ctx, device, port)
 	}
 	started := a.mesh.now()
 	conn, err := a.mesh.appLANDial(ctx, address, device, port)
@@ -80,4 +79,24 @@ func (a *MeshAppDialer) dialLAN(ctx context.Context, device meshid.Device, port 
 		return nil, "", err
 	}
 	return conn, "lan-direct", nil
+}
+
+func (a *MeshAppDialer) dialCloud(ctx context.Context, device meshid.Device, port uint16) (net.Conn, string, error) {
+	a.mesh.mu.Lock()
+	endpoint, dial := a.mesh.cloudURL, a.mesh.cloudAppDial
+	a.mesh.mu.Unlock()
+	if endpoint == "" || dial == nil {
+		return nil, "", meshsession.ErrNoRoute
+	}
+	started := a.mesh.now()
+	conn, err := dial(ctx, device, port)
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	a.mesh.metrics.RecordDial(device, "cloud-app", result, float64(a.mesh.now().Sub(started).Milliseconds()))
+	if err != nil {
+		return nil, "", err
+	}
+	return conn, "cloud-app", nil
 }
