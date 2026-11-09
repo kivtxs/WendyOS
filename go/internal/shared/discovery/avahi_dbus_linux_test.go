@@ -952,6 +952,9 @@ func TestAvahiStreamBackendLive(t *testing.T) {
 func TestAvahiBrowseIPv6SightingsDoNotStarveRemoteIPv4(t *testing.T) {
 	fake := newFakeAvahiConn("/browser")
 	fake.resolveContextFn = func(ctx context.Context, args []any) ([]any, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		protocol, addressProtocol := args[1].(int32), args[5].(int32)
 		if protocol == avahiProtoInet6 && addressProtocol != avahiProtoInet6 {
 			<-ctx.Done()
