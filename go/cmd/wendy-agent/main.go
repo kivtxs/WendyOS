@@ -1118,11 +1118,10 @@ func main() {
 			if meshCtx.Err() != nil {
 				return
 			}
-			name, _ := os.Hostname()
 			launch(func() {
 				runMeshSupervisor(meshCtx, 5*time.Second, func(ctx context.Context) error {
 					return runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
-						Name: name, AgentPort: uint16(mtlsPortNum),
+						Name: services.FriendlyDeviceName(), NameSource: services.FriendlyDeviceName, AgentPort: uint16(mtlsPortNum),
 						Agent:        services.MeshAgentMetadata(),
 						AppEndpoints: []localmesh.AppEndpoint{{Transport: localmesh.AppQUIC, Port: meshsession.Port}, {Transport: localmesh.AppTLS, Port: meshsession.TLSPort}},
 						Certificate:  certPEM, Chain: chainPEM, Key: keyPEM,

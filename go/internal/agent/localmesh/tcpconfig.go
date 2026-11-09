@@ -39,6 +39,7 @@ type TCPPeer struct {
 }
 
 type TCPIdentity struct {
+	NameSource              func() string `json:"-"`
 	Name                    string
 	AgentPort               uint16
 	AppEndpoints            []AppEndpoint // supplied only for ready local listeners
