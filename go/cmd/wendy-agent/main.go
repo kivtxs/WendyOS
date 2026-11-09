@@ -1283,6 +1283,15 @@ func main() {
 		return col.LANDevices, nil
 	}
 	meshResolver := services.NewMeshResolver(logger, meshRoster, meshBrowse)
+	meshResolver.SetMeshSnapshot(func() localmesh.NodeSnapshot {
+		localMeshMu.RLock()
+		snapshot := localMeshSnapshot
+		localMeshMu.RUnlock()
+		if snapshot == nil {
+			return localmesh.NodeSnapshot{}
+		}
+		return snapshot()
+	})
 	// The tenant mesh names resolve under follows the roster's provisioned
 	// identity; unset until provisioning completes.
 	var meshTenant meshid.Tenant
