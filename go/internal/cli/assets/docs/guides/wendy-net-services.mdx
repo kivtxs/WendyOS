@@ -160,7 +160,10 @@ work even when Wendy Net participation is disabled. With participation enabled,
 the same names can reach devices through any supported carrier and intermediate
 routers. Cloud app connections require updated agents and Cloud support for the
 authenticated application tunnel; the source and destination must belong to the
-same organization. Service discovery announcements are still needed when clients
+same organization. Device-originated Cloud sessions also require a live
+`tunnel:request` grant covering the destination device; same-tenant enrollment
+alone does not authorize a Cloud session. This change creates no default grant.
+Service discovery announcements are still needed when clients
 browse for services rather than naming a device directly.
 
 These names resolve to addresses in the calling host's own `10.99.0.0/16`
