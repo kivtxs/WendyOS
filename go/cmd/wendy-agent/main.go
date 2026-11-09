@@ -1068,7 +1068,6 @@ func main() {
 			return
 		}
 		localMeshLife.Start(ctx, func(meshCtx context.Context, launch func(func())) {
-			meshCtx, stopSessions := context.WithCancel(meshCtx)
 			applicationListener, retireEndpoints := startApplicationEndpoints(meshCtx, credentials, meshIngress, appUDPMessages, accessPolicy.AllowsNetwork, logger, launch)
 			applicationRelayMu.Lock()
 			applicationRelayListener = applicationListener
@@ -1086,7 +1085,6 @@ func main() {
 			appClient, err := meshsession.NewClient(credentials, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app client unavailable", zap.Error(err))
-				stopSessions()
 				return
 			}
 			localMeshMu.Lock()
@@ -1115,37 +1113,17 @@ func main() {
 			sessionServer, err := meshsession.NewServer(credentials, sessionIngress, appUDPMessages)
 			if err != nil {
 				logger.Error("wendy net app session unavailable", zap.Error(err))
-				stopSessions()
 				return
 			}
-			// Publish app capabilities only after both sockets have bound. A
-			// listener failure ends the carriers and their signed advertisement.
-			ready := make(chan struct{}, 2)
-			onReady := func() { ready <- struct{}{} }
-			launch(func() {
-				defer stopSessions()
-				if err := sessionServer.RunTLS(meshCtx, fmt.Sprintf(":%d", meshsession.TLSPort), onReady); err != nil && meshCtx.Err() == nil {
-					logger.Error("wendy net TLS app session stopped", zap.Error(err))
-				}
-			})
-			launch(func() {
-				defer stopSessions()
-				if err := sessionServer.Run(meshCtx, fmt.Sprintf(":%d", meshsession.Port), onReady); err != nil && meshCtx.Err() == nil {
-					logger.Error("wendy net app session stopped", zap.Error(err))
-				}
-			})
-			for range 2 {
-				select {
-				case <-ready:
-				case <-meshCtx.Done():
-					return
-				}
-			}
-			if meshCtx.Err() != nil {
+			// Only routed sessions and carriers share listener-failure scope.
+			// LAN and Cloud ingress remain owned by the enrolled generation.
+			routedCtx, ready := startRoutedApplicationSessions(meshCtx, sessionServer,
+				fmt.Sprintf(":%d", meshsession.TLSPort), fmt.Sprintf(":%d", meshsession.Port), logger, launch)
+			if !ready {
 				return
 			}
 			launch(func() {
-				runMeshSupervisor(meshCtx, 5*time.Second, func(ctx context.Context) error {
+				runMeshSupervisor(routedCtx, 5*time.Second, func(ctx context.Context) error {
 					return runConfiguredNetCarriers(ctx, configPath, localmesh.TCPIdentity{
 						Name: services.FriendlyDeviceName(), NameSource: services.FriendlyDeviceName, AgentPort: uint16(mtlsPortNum),
 						Agent:        services.MeshAgentMetadata(),
