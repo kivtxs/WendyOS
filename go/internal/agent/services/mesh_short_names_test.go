@@ -35,6 +35,20 @@ func TestShortRosterKeepsExactLabelsAndLegacyAmbiguity(t *testing.T) {
 	}
 }
 
+func TestShortRosterExactCloudLabelPreservesUnambiguousLegacyAlias(t *testing.T) {
+	r := provisionedRoster(t)
+	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{Entries: []*cloudpbv2.MeshRosterEntry{{Name: "camera--a", AssetId: rosterDevice}}})
+	for _, lookup := range []struct {
+		name string
+		fn   func(string) (RosterEntry, bool)
+	}{{"camera-a", r.Lookup}, {"camera--a", r.LookupExact}} {
+		entry, ok := lookup.fn(lookup.name)
+		if !ok || entry.DeviceUUID != rosterDevice {
+			t.Fatalf("lookup %s = %+v,%v, want device %s", lookup.name, entry, ok, rosterDevice)
+		}
+	}
+}
+
 func TestShortRosterLegacyCollisionFailsClosed(t *testing.T) {
 	r := provisionedRoster(t)
 	r.applyResponse(r.generation, &cloudpbv2.GetMeshRosterResponse{Entries: []*cloudpbv2.MeshRosterEntry{
