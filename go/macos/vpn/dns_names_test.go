@@ -29,7 +29,7 @@ func TestShortDNSAliasesAndExactFriendlyLabels(t *testing.T) {
 	const tenant = "11111111-1111-4111-8111-111111111111"
 	const first = "22222222-2222-4222-8222-222222222222"
 	const second = "33333333-3333-4333-8333-333333333333"
-	routes, err := BuildRoutes([]Route{{Selector: "mesh://" + tenant + "/" + first, Name: "jetson-a"}, {Selector: "cloud://api.wendy.dev/tenant/" + tenant + "/asset/" + second, Name: "jetson--a"}})
+	routes, err := BuildRoutes([]Route{{Selector: "mesh://" + tenant + "/" + first, Name: "jetson-a"}, {Selector: "cloud://api.wendy.dev/tenant/" + tenant + "/asset/" + second, Name: "jetson--a", Principal: "spiffe://wendy.sh/tenant/" + tenant + "/device/" + second}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +107,10 @@ func TestCloudAssetUUIDDoesNotBecomeDeviceIdentityAlias(t *testing.T) {
 	if response := dnsNameReply(t, "device-"+id+".wendy.internal", routes); response.Rcode != dns.RcodeNameError {
 		t.Fatal(response)
 	}
+	if response := dnsNameReply(t, "jetson.wendy.internal", routes); response.Rcode != dns.RcodeNameError {
+		t.Fatal("unbound Cloud route gained a private friendly alias", response)
+	}
+
 	// Asset and mesh identities may differ in older Cloud inventories. Keeping
 	// their explicit namespaces distinct also preserves mixed route configs.
 	routes, err = BuildRoutes([]Route{cloud, {Selector: "mesh://" + tenant + "/" + id, Name: "jetson"}})
@@ -153,5 +157,59 @@ func TestPersistedMeshDNSAliasesRemainValid(t *testing.T) {
 	config.Routes[0].Host = "device-33333333-3333-4333-8333-333333333333.mesh.wendy.dev"
 	if config.Validate() == nil {
 		t.Fatal("accepted different persisted device identity")
+	}
+}
+
+func TestVerifiedCloudIdentityAliasesAndMeshPreference(t *testing.T) {
+	const tenant = "11111111-1111-4111-8111-111111111111"
+	const asset = "22222222-2222-4222-8222-222222222222"
+	const device = "33333333-3333-4333-8333-333333333333"
+	cloud := Route{Selector: "cloud://api.wendy.dev/tenant/" + tenant + "/asset/" + asset, Name: "jetson", Principal: "spiffe://wendy.sh/tenant/" + tenant + "/device/" + device}
+	mesh := Route{Selector: "mesh://" + tenant + "/" + device, Name: "JETSON"}
+	for _, input := range [][]Route{{cloud}, {cloud, mesh}, {mesh, cloud}} {
+		routes, err := BuildRoutes(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := routes[0]
+		for _, r := range routes {
+			if strings.HasPrefix(r.Selector, "mesh:") {
+				want = r
+			}
+		}
+		for _, name := range []string{"device-" + device + ".wendy.internal", "jetson.wendy.internal"} {
+			response := dnsNameReply(t, name, routes)
+			if len(response.Answer) != 1 || response.Answer[0].(*dns.A).A.String() != want.Address {
+				t.Fatal(response)
+			}
+		}
+		if response := dnsNameReply(t, "device-"+asset+".wendy.internal", routes); response.Rcode != dns.RcodeNameError {
+			t.Fatal("asset row became private identity", response)
+		}
+		if response := dnsNameReply(t, "device-"+asset+".cloud.wendy.dev", routes); len(response.Answer) != 1 {
+			t.Fatal("lost legacy asset alias", response)
+		}
+	}
+	cloud.Principal = "spiffe://wendy.sh/tenant/" + tenant + "/device/" + asset
+	routes, err := BuildRoutes([]Route{cloud, mesh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := dnsNameReply(t, "jetson.wendy.internal", routes); response.Rcode != dns.RcodeNameError {
+		t.Fatal("different principals merged", response)
+	}
+	cloud.Principal = "spiffe://wendy.sh/tenant/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/device/" + device
+	if _, err := BuildRoutes([]Route{cloud}); err == nil {
+		t.Fatal("accepted foreign principal")
+	}
+	mesh.Principal = "spiffe://wendy.sh/tenant/" + tenant + "/device/" + asset
+	if _, err := BuildRoutes([]Route{mesh}); err == nil {
+		t.Fatal("accepted mesh selector/principal mismatch")
+	}
+}
+func TestPrivateZoneApexIsAuthoritative(t *testing.T) {
+	response := dnsNameReply(t, "wendy.internal", nil)
+	if response.Rcode != dns.RcodeNameError || !response.Authoritative {
+		t.Fatal(response)
 	}
 }

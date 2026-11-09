@@ -28,6 +28,10 @@ func AnswerDNS(wire []byte, routes []Route) ([]byte, error) {
 		reply.Rcode = dns.RcodeRefused
 		return reply.Pack()
 	}
+	if name == meshname.Suffix+"." {
+		reply.Rcode = dns.RcodeNameError
+		return reply.Pack()
+	}
 	label, suffix, ok := deviceDNSLabel(name)
 	if !ok {
 		reply.Rcode = dns.RcodeRefused
@@ -40,60 +44,80 @@ func AnswerDNS(wire []byte, routes []Route) ([]byte, error) {
 		}
 	}
 	identity := strings.HasPrefix(label, "device-") && !strings.Contains(label, ".")
-	if suffix == meshname.Suffix {
-		_, err := meshid.ParseDeviceUUID(strings.TrimPrefix(label, "device-"))
-		identity = identity && err == nil
-	}
+	_, uuidErr := meshid.ParseDeviceUUID(strings.TrimPrefix(label, "device-"))
+	uuidIdentity := identity && uuidErr == nil
 	if !identity && suffix != meshname.Suffix {
-		// Public compatibility zones also contain public services. Let macOS use
-		// its system resolver for names this device resolver does not own.
 		reply.Rcode = dns.RcodeRefused
 		reply.Authoritative = false
 		return reply.Pack()
 	}
+	// .cloud compatibility names historically address asset records. An exact
+	// legacy host wins there; its asset UUID must not become a private identity.
+	if suffix == meshname.LegacySuffix {
+		for i := range routes {
+			if name == strings.ToLower(dns.Fqdn(routes[i].Host)) {
+				return answerRoute(reply, q, &routes[i])
+			}
+		}
+	}
 	var found *Route
-	priority := 0
+	foundIdentity := ""
 	for i := range routes {
-		r := &routes[i]
-		score := 0
-		if name == strings.ToLower(dns.Fqdn(r.Host)) {
-			score = 2
+		route := &routes[i]
+		peer, verified, err := routeDevice(*route)
+		if err != nil {
+			continue
 		}
-		if identity {
-			routeLabel, _, valid := deviceDNSLabel(strings.ToLower(dns.Fqdn(r.Host)))
-			// The new namespace is identity-based. Numeric compatibility hostnames
-			// must not be interpreted as device UUIDs there.
-			_, uuidErr := meshid.ParseDeviceUUID(strings.TrimPrefix(label, "device-"))
-			if valid && routeLabel == label && !strings.HasPrefix(r.Selector, "cloud://") && (suffix != meshname.Suffix || uuidErr == nil) && score == 0 {
-				score = 1
-			}
-		} else if host, valid := meshname.Friendly(r.Name); valid && name == dns.Fqdn(host) && singleTenant(routes) {
-			score = 1
+		matches := false
+		if suffix != meshname.Suffix && name == strings.ToLower(dns.Fqdn(route.Host)) {
+			matches = true
+		} else if uuidIdentity {
+			matches = verified && peer.UUID().String() == strings.TrimPrefix(label, "device-")
+		} else if suffix == meshname.Suffix {
+			host, valid := meshname.Friendly(route.Name)
+			matches = verified && valid && name == dns.Fqdn(host) && singleTenant(routes)
+		} else {
+			matches = name == strings.ToLower(dns.Fqdn(route.Host))
 		}
-		if score > 0 {
-			if score < priority {
-				continue
-			}
-			if found != nil && score == priority && found.Selector != r.Selector {
-				reply.Rcode = dns.RcodeNameError
-				return reply.Pack()
-			}
-			found = r
-			priority = score
+		if !matches {
+			continue
+		}
+		key := route.Selector
+		if verified {
+			key = peer.Principal()
+		}
+		if found != nil && key != foundIdentity {
+			reply.Rcode = dns.RcodeNameError
+			return reply.Pack()
+		}
+		// One authenticated device may have both mesh and Cloud paths. Prefer the
+		// mesh path without depending on discovery/list ordering.
+		if found == nil || preferDNSRoute(*route, *found) {
+			found = route
+			foundIdentity = key
 		}
 	}
 	if found == nil {
 		reply.Rcode = dns.RcodeNameError
 		return reply.Pack()
 	}
+	return answerRoute(reply, q, found)
+}
+
+func answerRoute(reply *dns.Msg, q dns.Question, route *Route) ([]byte, error) {
 	if q.Qtype == dns.TypeA {
-		reply.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30}, A: net.ParseIP(found.Address)}}
+		reply.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30}, A: net.ParseIP(route.Address)}}
 	}
 	return reply.Pack()
 }
-
+func preferDNSRoute(candidate, current Route) bool {
+	a, b := strings.HasPrefix(candidate.Selector, "mesh:"), strings.HasPrefix(current.Selector, "mesh:")
+	if a != b {
+		return a
+	}
+	return candidate.Selector < current.Selector
+}
 func deviceDNSLabel(name string) (string, string, bool) {
-	// Match child namespaces before wendy.internal itself.
 	for _, suffix := range []string{meshname.PreviousSuffix, "mesh.wendy.dev", meshname.LegacySuffix, meshname.Suffix} {
 		if tail := "." + suffix + "."; strings.HasSuffix(name, tail) {
 			return strings.TrimSuffix(name, tail), suffix, true
@@ -102,12 +126,11 @@ func deviceDNSLabel(name string) (string, string, bool) {
 	return "", "", false
 }
 
-// Short friendly names have a meaning only within one enrolled tenant. A
-// caller supplying routes from multiple tenants must use UUID identities.
+// Friendly aliases have meaning only within one explicitly selected tenant.
 func singleTenant(routes []Route) bool {
 	tenant := ""
-	for _, r := range routes {
-		u, err := url.Parse(r.Selector)
+	for _, route := range routes {
+		u, err := url.Parse(route.Selector)
 		if err != nil {
 			return false
 		}

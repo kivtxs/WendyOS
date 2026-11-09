@@ -140,20 +140,23 @@ struct WendyMeshTests {
 
     @Test("short DNS identity and friendly aliases resolve only authenticated directory devices")
     func shortDNSNames() throws {
+        let tenant = "11111111-1111-4111-8111-111111111111"
         let first = "22222222-2222-4222-8222-222222222222"
         let second = "33333333-3333-4333-8333-333333333333"
         let directory = WendyMeshDirectory(devices: [
             WendyMeshDevice(
                 assetID: first,
                 name: "jetson-a",
-                organizationID: "tenant",
-                online: true
+                organizationID: tenant,
+                online: true,
+                principal: "spiffe://wendy.sh/tenant/\(tenant)/device/\(first)"
             ),
             WendyMeshDevice(
                 assetID: second,
                 name: "jetson--a",
-                organizationID: "tenant",
-                online: true
+                organizationID: tenant,
+                online: true,
+                principal: "spiffe://wendy.sh/tenant/\(tenant)/device/\(second)"
             ),
         ])
         for suffix in ["wendy.internal", "mesh.wendy.internal", "cloud.wendy.dev"] {
@@ -179,7 +182,7 @@ struct WendyMeshTests {
             WendyMeshDNS.addressIndex(forName: "Kelvin.wendy.internal", directory: directory) == nil
         )
         let unicodeDirectory = WendyMeshDirectory(devices: [
-            WendyMeshDevice(assetID: first, name: "Kelvin", organizationID: "tenant", online: true)
+            WendyMeshDevice(assetID: first, name: "Kelvin", organizationID: tenant, online: true)
         ])
         #expect(
             WendyMeshDNS.addressIndex(forName: "kelvin.wendy.internal", directory: unicodeDirectory)
@@ -207,7 +210,7 @@ struct WendyMeshTests {
                 WendyMeshDevice(
                     assetID: "44444444-4444-4444-8444-444444444444",
                     name: "Jetson-A",
-                    organizationID: "tenant",
+                    organizationID: tenant,
                     online: true
                 )
             ]
@@ -216,6 +219,45 @@ struct WendyMeshTests {
             WendyMeshDNS.addressIndex(forName: "jetson-a.wendy.internal", directory: duplicate)
                 == nil
         )
+    }
+
+    @Test("private UUID DNS aliases require an explicit enrolled identity binding")
+    func privateDNSIdentityBinding() throws {
+        let tenant = "11111111-1111-4111-8111-111111111111"
+        let asset = "22222222-2222-4222-8222-222222222222"
+        let device = "33333333-3333-4333-8333-333333333333"
+        let unbound = WendyMeshDirectory(devices: [
+            WendyMeshDevice(assetID: asset, name: "jetson", organizationID: tenant, online: true)
+        ])
+        #expect(
+            WendyMeshDNS.addressIndex(
+                forName: "device-\(asset).cloud.wendy.dev",
+                directory: unbound
+            ) == 1
+        )
+        #expect(
+            WendyMeshDNS.addressIndex(forName: "device-\(asset).wendy.internal", directory: unbound)
+                == nil
+        )
+        let bound = WendyMeshDirectory(devices: [
+            WendyMeshDevice(
+                assetID: asset,
+                name: "jetson",
+                organizationID: tenant,
+                online: true,
+                principal: "spiffe://wendy.sh/tenant/\(tenant)/device/\(device)"
+            )
+        ])
+        #expect(
+            WendyMeshDNS.addressIndex(forName: "device-\(device).wendy.internal", directory: bound)
+                == 1
+        )
+        #expect(
+            WendyMeshDNS.addressIndex(forName: "device-\(asset).wendy.internal", directory: bound)
+                == nil
+        )
+        let apex = try #require(WendyMeshDNS.answer(dnsQuery("wendy.internal"), directory: bound))
+        #expect(apex[3] & 0x0f == 3)
     }
 
     @Test("malformed and oversized DNS messages are rejected without trapping")

@@ -76,6 +76,40 @@ final class VPNInternetTests: XCTestCase {
         XCTAssertEqual(settings.ipv6Settings?.includedRoutes?.first?.destinationNetworkPrefixLength, 0)
     }
 
+    func testVerifiedRoutePrincipalSurvivesCodableAndCBridge() throws {
+        let principal =
+            "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/device/33333333-3333-4333-8333-333333333333"
+        var configuration = deviceOnly
+        configuration = VPNConfiguration(
+            endpoint: configuration.endpoint,
+            token: configuration.token,
+            routes: [
+                VPNRoute(
+                    selector:
+                        "cloud://api.wendy.dev/tenant/11111111-1111-4111-8111-111111111111/asset/22222222-2222-4222-8222-222222222222",
+                    name: "jetson",
+                    address: "10.99.1.2",
+                    host: "device-22222222-2222-4222-8222-222222222222.cloud.wendy.dev",
+                    principal: principal
+                )
+            ]
+        )
+        let roundTrip = try PropertyListDecoder().decode(
+            VPNConfiguration.self,
+            from: PropertyListEncoder().encode(configuration)
+        )
+        XCTAssertEqual(roundTrip.routes.first?.principal, principal)
+        roundTrip.withCValue { value in
+            XCTAssertEqual(value.pointee.route_count, 1)
+            XCTAssertEqual(String(cString: value.pointee.routes[0].principal), principal)
+        }
+        let legacy = try PropertyListDecoder().decode(
+            VPNConfiguration.self,
+            from: PropertyListEncoder().encode(deviceOnly)
+        )
+        XCTAssertNil(legacy.routes.first?.principal)
+    }
+
     func testSystemRestartKeepsIntentWithoutPersistingRelayCredentials() throws {
         var configuration = deviceOnly
         configuration.gateway = "auto"

@@ -44,12 +44,21 @@ public struct WendyMeshDevice: Codable, Equatable, Sendable {
     public let name: String
     public let organizationID: String
     public let online: Bool
+    /// Authenticated inventory/certificate binding; an old asset UUID may differ.
+    public let principal: String?
 
-    public init(assetID: String, name: String, organizationID: String, online: Bool) {
+    public init(
+        assetID: String,
+        name: String,
+        organizationID: String,
+        online: Bool,
+        principal: String? = nil
+    ) {
         self.assetID = assetID
         self.name = name
         self.organizationID = organizationID
         self.online = online
+        self.principal = principal
     }
 
     enum CodingKeys: String, CodingKey {
@@ -57,6 +66,7 @@ public struct WendyMeshDevice: Codable, Equatable, Sendable {
         case name
         case organizationID = "org_id"
         case online
+        case principal
     }
 }
 
@@ -192,7 +202,18 @@ public enum WendyMeshDNS {
         if label.hasPrefix("device-") {
             let value = String(label.dropFirst("device-".count))
             if let uuid = UUID(uuidString: value), uuid.uuidString.lowercased() == value {
-                return directory.addressIndex(forAssetID: value)
+                if suffix == ".cloud.wendy.dev" {
+                    return directory.addressIndex(forAssetID: value)
+                }
+                let matches = directory.devices.filter { device in
+                    guard let tenant = UUID(uuidString: device.organizationID),
+                        tenant.uuidString.lowercased() == device.organizationID
+                    else { return false }
+                    return device.principal
+                        == "spiffe://wendy.sh/tenant/\(device.organizationID)/device/\(value)"
+                }
+                guard matches.count == 1, let device = matches.first else { return nil }
+                return directory.addressIndex(forAssetID: device.assetID)
             }
             if suffix != ".wendy.internal", let index = addressIndex(forName: name),
                 directory.device(forAddressIndex: index) != nil
@@ -224,7 +245,9 @@ public enum WendyMeshDNS {
     public static func answer(_ data: Data, directory: WendyMeshDirectory) -> Data? {
         guard let query = parseQuery(data) else { return nil }
         let normalized = query.name.lowercased()
-        guard suffixes.contains(where: { normalized.hasSuffix($0) }) else { return nil }
+        guard
+            normalized == "wendy.internal" || suffixes.contains(where: { normalized.hasSuffix($0) })
+        else { return nil }
         guard let index = addressIndex(forName: query.name, directory: directory),
             let address = WendyMeshAddressPlan.address(for: index)
         else { return response(to: query, answer: nil, responseCode: 3) }
@@ -238,7 +261,9 @@ public enum WendyMeshDNS {
         guard let query = parseQuery(data) else { return nil }
         let normalized = (query.name.hasSuffix(".") ? String(query.name.dropLast()) : query.name)
             .lowercased()
-        guard suffixes.contains(where: { normalized.hasSuffix($0) }) else { return nil }
+        guard
+            normalized == "wendy.internal" || suffixes.contains(where: { normalized.hasSuffix($0) })
+        else { return nil }
         guard let addressIndex = addressIndex(forName: query.name),
             let address = resolve(addressIndex)
         else {
